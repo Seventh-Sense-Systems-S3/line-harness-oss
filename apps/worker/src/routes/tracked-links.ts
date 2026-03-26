@@ -6,6 +6,7 @@ import {
   deleteTrackedLink,
   recordLinkClick,
   getLinkClicks,
+  getFriendByLineUserId,
 } from '@line-crm/db';
 import { addTagToFriend, enrollFriendInScenario } from '@line-crm/db';
 import type { TrackedLink } from '@line-crm/db';
@@ -13,12 +14,18 @@ import type { Env } from '../index.js';
 
 const trackedLinks = new Hono<Env>();
 
-function serializeTrackedLink(row: TrackedLink, baseUrl: string) {
+function serializeTrackedLink(row: TrackedLink, baseUrl: string, liffUrl?: string) {
+  const directUrl = `${baseUrl}/t/${row.id}`;
+  // Wrap in LIFF URL for user identification on click
+  const trackingUrl = liffUrl
+    ? `${liffUrl}?redirect=${encodeURIComponent(directUrl)}`
+    : directUrl;
   return {
     id: row.id,
     name: row.name,
     originalUrl: row.original_url,
-    trackingUrl: `${baseUrl}/t/${row.id}`,
+    trackingUrl,
+    directUrl,
     tagId: row.tag_id,
     scenarioId: row.scenario_id,
     isActive: Boolean(row.is_active),
@@ -38,7 +45,8 @@ trackedLinks.get('/api/tracked-links', async (c) => {
   try {
     const items = await getTrackedLinks(c.env.DB);
     const base = getBaseUrl(c);
-    return c.json({ success: true, data: items.map((item) => serializeTrackedLink(item, base)) });
+    const liffUrl = c.env.LIFF_URL;
+    return c.json({ success: true, data: items.map((item) => serializeTrackedLink(item, base, liffUrl)) });
   } catch (err) {
     console.error('GET /api/tracked-links error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -58,7 +66,7 @@ trackedLinks.get('/api/tracked-links/:id', async (c) => {
     return c.json({
       success: true,
       data: {
-        ...serializeTrackedLink(link, base),
+        ...serializeTrackedLink(link, base, c.env.LIFF_URL),
         clicks: clicks.map((click) => ({
           id: click.id,
           friendId: click.friend_id,
@@ -95,7 +103,7 @@ trackedLinks.post('/api/tracked-links', async (c) => {
     });
 
     const base = getBaseUrl(c);
-    return c.json({ success: true, data: serializeTrackedLink(link, base) }, 201);
+    return c.json({ success: true, data: serializeTrackedLink(link, base, c.env.LIFF_URL) }, 201);
   } catch (err) {
     console.error('POST /api/tracked-links error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -121,7 +129,16 @@ trackedLinks.delete('/api/tracked-links/:id', async (c) => {
 // GET /t/:linkId — click tracking redirect (no auth, fast redirect)
 trackedLinks.get('/t/:linkId', async (c) => {
   const linkId = c.req.param('linkId');
-  const friendId = c.req.query('f') ?? null;
+  const lineUserId = c.req.query('lu') ?? null;
+  let friendId = c.req.query('f') ?? null;
+
+  // Resolve friendId from LINE user ID if provided
+  if (!friendId && lineUserId) {
+    const friend = await getFriendByLineUserId(c.env.DB, lineUserId);
+    if (friend) {
+      friendId = friend.id;
+    }
+  }
 
   // Look up the link first
   const link = await getTrackedLinkById(c.env.DB, linkId);
