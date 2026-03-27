@@ -11,6 +11,7 @@ export { RichMenusResource } from './resources/rich-menus.js'
 export { TrackedLinksResource } from './resources/tracked-links.js'
 export { FormsResource } from './resources/forms.js'
 export { AdPlatformsResource } from './resources/ad-platforms.js'
+export { StaffResource } from './resources/staff.js'
 
 // All types
 export type {
@@ -53,6 +54,11 @@ export type {
   CreateFormInput,
   UpdateFormInput,
   FormSubmission,
+  StaffRole,
+  StaffMember,
+  StaffProfile,
+  CreateStaffInput,
+  UpdateStaffInput,
 } from './types.js'
 
 export type {

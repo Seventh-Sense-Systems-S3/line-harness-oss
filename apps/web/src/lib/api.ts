@@ -22,6 +22,7 @@ import type {
   Notification,
   AccountHealthLog,
   AccountMigration,
+  StaffMember,
 } from '@line-crm/shared'
 
 import type { Broadcast } from '@line-crm/shared'
@@ -479,5 +480,27 @@ export const api = {
       }),
     getMigration: (migrationId: string) =>
       fetchApi<ApiResponse<AccountMigration>>(`/api/accounts/migrations/${migrationId}`),
+  },
+  staff: {
+    list: () =>
+      fetchApi<ApiResponse<StaffMember[]>>('/api/staff'),
+    get: (id: string) =>
+      fetchApi<ApiResponse<StaffMember>>(`/api/staff/${id}`),
+    me: () =>
+      fetchApi<ApiResponse<{ id: string; name: string; role: string; email: string | null }>>('/api/staff/me'),
+    create: (data: { name: string; email?: string; role: 'admin' | 'staff' }) =>
+      fetchApi<ApiResponse<StaffMember>>('/api/staff', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    update: (id: string, data: { name?: string; email?: string | null; role?: string; isActive?: boolean }) =>
+      fetchApi<ApiResponse<StaffMember>>(`/api/staff/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }),
+    delete: (id: string) =>
+      fetchApi<ApiResponse<null>>(`/api/staff/${id}`, { method: 'DELETE' }),
+    regenerateKey: (id: string) =>
+      fetchApi<ApiResponse<{ apiKey: string }>>(`/api/staff/${id}/regenerate-key`, { method: 'POST' }),
   },
 }

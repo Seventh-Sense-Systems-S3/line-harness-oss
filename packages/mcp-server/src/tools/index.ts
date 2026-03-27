@@ -15,6 +15,7 @@ import { registerAccountSummary } from "./account-summary.js";
 import { registerListCrmObjects } from "./list-crm-objects.js";
 import { registerManageAdPlatforms } from "./manage-ad-platforms.js";
 import { registerGetConversionLogs } from "./get-conversion-logs.js";
+import { registerManageStaff } from "./manage-staff.js";
 
 export function registerAllTools(server: McpServer): void {
   registerSendMessage(server);
@@ -33,4 +34,5 @@ export function registerAllTools(server: McpServer): void {
   registerListCrmObjects(server);
   registerManageAdPlatforms(server);
   registerGetConversionLogs(server);
+  registerManageStaff(server);
 }
