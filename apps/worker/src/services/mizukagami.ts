@@ -305,6 +305,9 @@ export async function handleMizukagamiMessage(
                 kaku: result.unleash.kaku,
                 honryou: result.unleash.honryou,
                 miushinai: result.unleash.miushinai,
+                calculatorDetails:
+                  (result as Record<string, unknown>).calculatorDetails ??
+                  undefined,
               },
             }),
           });
@@ -397,6 +400,12 @@ export async function handleMizukagamiMessage(
             honryou_expression: string;
             miushinai_expression: string;
             closing_message: string;
+            calculator_summary?: Array<{
+              tradition: string;
+              value: string;
+              disclosed: boolean;
+            }>;
+            overall_resonance?: number;
           };
           sessionCompleted?: boolean;
           current_step?: string;
@@ -461,6 +470,12 @@ function buildMirrorCardFlex(
     honryou_expression: string;
     miushinai_expression: string;
     closing_message: string;
+    calculator_summary?: Array<{
+      tradition: string;
+      value: string;
+      disclosed: boolean;
+    }>;
+    overall_resonance?: number;
   },
 ): {
   type: "flex";
@@ -563,6 +578,32 @@ function buildMirrorCardFlex(
             wrap: true,
           },
           { type: "separator", color: "#1a1a2e", margin: "lg" },
+          // 八つの深層（calculator_summary）
+          ...(card.calculator_summary && card.calculator_summary.length > 0
+            ? [
+                {
+                  type: "text",
+                  text: `八つの深層${card.overall_resonance ? `  共鳴度 ${card.overall_resonance}%` : ""}`,
+                  size: "xxs",
+                  color: "#5E5E7E",
+                  margin: "lg",
+                },
+                ...card.calculator_summary.map(
+                  (cs: {
+                    tradition: string;
+                    value: string;
+                    disclosed: boolean;
+                  }) => ({
+                    type: "text",
+                    text: `${cs.disclosed ? "★ " : "  "}${cs.tradition}: ${cs.value}`,
+                    size: "xs",
+                    color: cs.disclosed ? "#A8A8C8" : "#5E5E7E",
+                    wrap: true,
+                  }),
+                ),
+                { type: "separator", color: "#1a1a2e", margin: "lg" },
+              ]
+            : []),
           // closing
           {
             type: "text",
