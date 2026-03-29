@@ -20,7 +20,11 @@ const DATE_PATTERNS = [
   /^(\d{4})(\d{2})(\d{2})$/,
 ];
 
-type SessionState = "AWAITING_BIRTHDAY" | "CALCULATING" | "RESULT_SHOWN";
+type SessionState =
+  | "AWAITING_BIRTHDAY"
+  | "CALCULATING"
+  | "RESULT_SHOWN"
+  | "MIRROR_SESSION";
 
 interface MizukagamiSession {
   id: string;
@@ -274,12 +278,51 @@ export async function handleMizukagamiMessage(
         );
         await lineClient.pushMessage(lineUserId, [flexMessage]);
 
-        // セッション完了
+        // D1 に結果を保存し、Mirror Session 状態に遷移
         await updateSession(db, session.id, {
-          state: "RESULT_SHOWN",
+          state: "MIRROR_SESSION",
           diagnosis_result: JSON.stringify(result),
-          completed_at: new Date().toISOString(),
         });
+
+        // Mirror Session (Phase 2) の開始を Soul Agent API に依頼
+        try {
+          const mirrorUrl = env.SOUL_AGENT_DIAGNOSIS_URL!.replace(
+            "/diagnosis",
+            "/mirror-session",
+          );
+          const mirrorRes = await fetch(mirrorUrl, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-api-key": env.SOUL_AGENT_API_KEY!,
+            },
+            body: JSON.stringify({
+              action: "start",
+              line_user_id: lineUserId,
+              innate_profile: {
+                spiralPrimary: result.diagnosis.innate.primary,
+                confidence: result.diagnosis.innate.confidence,
+                kaku: result.unleash.kaku,
+                honryou: result.unleash.honryou,
+                miushinai: result.unleash.miushinai,
+              },
+            }),
+          });
+
+          if (mirrorRes.ok) {
+            const mirrorData = (await mirrorRes.json()) as {
+              message?: string;
+            };
+            if (mirrorData.message) {
+              await lineClient.pushMessage(lineUserId, [
+                { type: "text", text: mirrorData.message },
+              ]);
+            }
+          }
+        } catch (mirrorErr) {
+          console.error("[mizukagami] Mirror session start failed:", mirrorErr);
+          // Phase 1は成功しているので、Phase 2の失敗は致命的ではない
+        }
       } catch (err) {
         console.error("[mizukagami] Diagnosis API call failed:", err);
         await lineClient.pushMessage(lineUserId, [
@@ -294,7 +337,6 @@ export async function handleMizukagamiMessage(
     }
 
     case "CALCULATING": {
-      // 計算中のメッセージを受け取った場合
       await lineClient.replyMessage(replyToken, [
         {
           type: "text",
@@ -304,7 +346,255 @@ export async function handleMizukagamiMessage(
       return true;
     }
 
+    case "MIRROR_SESSION": {
+      // Phase 2: 水鏡との対話セッション
+      if (!env.SOUL_AGENT_DIAGNOSIS_URL || !env.SOUL_AGENT_API_KEY) {
+        return false;
+      }
+
+      // reply_token で「考え中」を即返信（LLM呼び出しに時間がかかるため）
+      await lineClient.replyMessage(replyToken, [
+        {
+          type: "text",
+          text: "...",
+        },
+      ]);
+
+      try {
+        const mirrorUrl = env.SOUL_AGENT_DIAGNOSIS_URL.replace(
+          "/diagnosis",
+          "/mirror-session",
+        );
+        const mirrorRes = await fetch(mirrorUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": env.SOUL_AGENT_API_KEY,
+          },
+          body: JSON.stringify({
+            action: "message",
+            line_user_id: lineUserId,
+            text,
+          }),
+        });
+
+        if (!mirrorRes.ok) {
+          const errText = await mirrorRes.text();
+          console.error("[mizukagami] Mirror session error:", errText);
+          await lineClient.pushMessage(lineUserId, [
+            {
+              type: "text",
+              text: "水鏡との接続に問題が生じました。もう一度お話しください。",
+            },
+          ]);
+          return true;
+        }
+
+        const mirrorData = (await mirrorRes.json()) as {
+          message?: string;
+          card?: {
+            kaku_expression: string;
+            honryou_expression: string;
+            miushinai_expression: string;
+            closing_message: string;
+          };
+          sessionCompleted?: boolean;
+          current_step?: string;
+        };
+
+        // 水鏡のメッセージを Push 送信
+        if (mirrorData.message) {
+          await lineClient.pushMessage(lineUserId, [
+            { type: "text", text: mirrorData.message },
+          ]);
+        }
+
+        // Step 4 完了: 水鏡カードを送信
+        if (mirrorData.sessionCompleted && mirrorData.card) {
+          const diagnosisResult = session.diagnosis_result
+            ? JSON.parse(session.diagnosis_result)
+            : null;
+          const spiralPrimary =
+            diagnosisResult?.diagnosis?.innate?.primary ?? "識";
+          const kakuName = diagnosisResult?.unleash?.kaku?.name ?? "あなたの核";
+
+          // カード用 Flex Message を構築（簡易版、API側で構築済みのデータを使用）
+          const cardFlex = buildMirrorCardFlex(
+            spiralPrimary,
+            kakuName,
+            mirrorData.card,
+          );
+          await lineClient.pushMessage(lineUserId, [cardFlex]);
+
+          // セッション完了
+          await updateSession(db, session.id, {
+            state: "RESULT_SHOWN",
+            completed_at: new Date().toISOString(),
+          });
+        }
+      } catch (err) {
+        console.error("[mizukagami] Mirror session message error:", err);
+        await lineClient.pushMessage(lineUserId, [
+          {
+            type: "text",
+            text: "水鏡との対話中にエラーが発生しました。もう一度「診断」と送信してください。",
+          },
+        ]);
+        await updateSession(db, session.id, { state: "RESULT_SHOWN" });
+      }
+      return true;
+    }
+
     default:
       return false;
   }
+}
+
+/**
+ * 水鏡カード Flex Message（CF Workers 側簡易版）
+ */
+function buildMirrorCardFlex(
+  spiralPrimary: string,
+  kakuName: string,
+  card: {
+    kaku_expression: string;
+    honryou_expression: string;
+    miushinai_expression: string;
+    closing_message: string;
+  },
+): {
+  type: "flex";
+  altText: string;
+  contents: Record<string, unknown>;
+} {
+  const COLORS: Record<string, string> = {
+    地: "#C4A882",
+    水: "#7EB8D8",
+    火: "#E07B6A",
+    風: "#8BC4A0",
+    空: "#B08CD8",
+    識: "#D4B06A",
+  };
+  const accent = COLORS[spiralPrimary] ?? "#D4B06A";
+
+  return {
+    type: "flex",
+    altText: `水鏡カード — ${kakuName}`,
+    contents: {
+      type: "bubble",
+      size: "giga",
+      styles: { body: { backgroundColor: "#050008" } },
+      body: {
+        type: "box",
+        layout: "vertical",
+        paddingAll: "24px",
+        spacing: "lg",
+        contents: [
+          {
+            type: "text",
+            text: "水 鏡",
+            size: "xxs",
+            color: "#6E6E8E",
+            align: "center",
+          },
+          {
+            type: "text",
+            text: kakuName,
+            weight: "bold",
+            size: "xl",
+            color: accent,
+            align: "center",
+            margin: "lg",
+          },
+          {
+            type: "text",
+            text: `─── ${spiralPrimary} ───`,
+            size: "xs",
+            color: "#5E5E7E",
+            align: "center",
+            margin: "sm",
+          },
+          { type: "separator", color: "#1a1a2e", margin: "lg" },
+          // 核
+          {
+            type: "text",
+            text: "核",
+            size: "xxs",
+            color: "#5E5E7E",
+            margin: "lg",
+          },
+          {
+            type: "text",
+            text: card.kaku_expression,
+            size: "md",
+            color: accent,
+            wrap: true,
+          },
+          { type: "separator", color: "#1a1a2e", margin: "lg" },
+          // 本領
+          {
+            type: "text",
+            text: "本領",
+            size: "xxs",
+            color: "#5E5E7E",
+            margin: "lg",
+          },
+          {
+            type: "text",
+            text: card.honryou_expression,
+            size: "md",
+            color: "#C8C8D8",
+            wrap: true,
+          },
+          { type: "separator", color: "#1a1a2e", margin: "lg" },
+          // 見失い
+          {
+            type: "text",
+            text: "見失い",
+            size: "xxs",
+            color: "#5E5E7E",
+            margin: "lg",
+          },
+          {
+            type: "text",
+            text: card.miushinai_expression,
+            size: "md",
+            color: "#8E8EA8",
+            wrap: true,
+          },
+          { type: "separator", color: "#1a1a2e", margin: "lg" },
+          // closing
+          {
+            type: "text",
+            text: card.closing_message,
+            size: "sm",
+            color: "#A8A8C8",
+            align: "center",
+            wrap: true,
+            margin: "lg",
+          },
+          {
+            type: "text",
+            text: "あなたの水面に映った言葉から紡がれました",
+            size: "xxs",
+            color: "#4E4E6E",
+            align: "center",
+            margin: "lg",
+          },
+          {
+            type: "button",
+            action: {
+              type: "message",
+              label: "もう一度、水面を覗く",
+              text: "診断",
+            },
+            style: "link",
+            color: accent,
+            height: "sm",
+            margin: "md",
+          },
+        ],
+      },
+    },
+  };
 }
