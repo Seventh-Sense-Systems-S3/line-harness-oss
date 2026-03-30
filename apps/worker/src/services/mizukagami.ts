@@ -275,6 +275,7 @@ export async function handleMizukagamiMessage(
           result.diagnosis.innate.primary,
           result.unleash,
           result.diagnosis.innate.confidence,
+          result.diagnosis.innate.consensus ?? undefined,
         );
         await lineClient.pushMessage(lineUserId, [flexMessage]);
 

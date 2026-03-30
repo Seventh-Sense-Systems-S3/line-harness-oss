@@ -29,6 +29,7 @@ export function buildDiagnosisFlexMessage(
   spiralPrimary: string,
   unleash: UnleashData,
   confidence: number,
+  consensus?: { agreementScore: number; narrative: string },
 ): {
   type: "flex";
   altText: string;
@@ -38,7 +39,9 @@ export function buildDiagnosisFlexMessage(
     kanji: spiralPrimary,
     color: "#FFFFFF",
   };
-  const confidencePercent = Math.round(confidence * 100);
+  const consensusPercent = consensus
+    ? Math.round(consensus.agreementScore * 100)
+    : Math.round(confidence * 100);
 
   return {
     type: "flex",
@@ -74,7 +77,7 @@ export function buildDiagnosisFlexMessage(
           },
           {
             type: "text",
-            text: `8叡智合意度: ${confidencePercent}%`,
+            text: `8叡智合意度: ${consensusPercent}%`,
             size: "xxs",
             color: "#6E6E6E",
             align: "center",
