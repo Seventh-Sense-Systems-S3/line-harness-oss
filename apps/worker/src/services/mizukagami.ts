@@ -221,22 +221,49 @@ export function isMizukagamiTrigger(text: string): boolean {
 // ============================================================
 
 function parseBirthday(text: string): string | null {
-  const trimmed = text.trim().replace(/[\s\-\/\.]/g, "");
-  // YYYYMMDD (8 digits)
-  const m8 = trimmed.match(/^(\d{4})(\d{2})(\d{2})$/);
+  // Strip all non-digit characters first, then check patterns
+  const digitsOnly = text.trim().replace(/[\s\-\/\.年月日]/g, "");
+
+  let year: number, month: number, day: number;
+
+  // Pattern 1: 8 digits (YYYYMMDD)
+  const m8 = digitsOnly.match(/^(\d{4})(\d{2})(\d{2})$/);
   if (m8) {
-    const dateStr = `${m8[1]}-${m8[2]}-${m8[3]}`;
-    const d = new Date(dateStr);
-    if (!isNaN(d.getTime()) && d < new Date()) return dateStr;
+    year = parseInt(m8[1], 10);
+    month = parseInt(m8[2], 10);
+    day = parseInt(m8[3], 10);
+  } else {
+    // Pattern 2: YYYY-MM-DD or YYYY/MM/DD (original text)
+    const mDash = text.trim().match(/^(\d{4})[\-\/](\d{1,2})[\-\/](\d{1,2})$/);
+    if (mDash) {
+      year = parseInt(mDash[1], 10);
+      month = parseInt(mDash[2], 10);
+      day = parseInt(mDash[3], 10);
+    } else {
+      return null;
+    }
   }
-  // Try YYYY-MM-DD directly
-  const mDash = text.trim().match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-  if (mDash) {
-    const dateStr = `${mDash[1]}-${mDash[2].padStart(2, "0")}-${mDash[3].padStart(2, "0")}`;
-    const d = new Date(dateStr);
-    if (!isNaN(d.getTime()) && d < new Date()) return dateStr;
-  }
-  return null;
+
+  // Validate ranges
+  if (year < 1900 || year > new Date().getFullYear()) return null;
+  if (month < 1 || month > 12) return null;
+  if (day < 1 || day > 31) return null;
+
+  // Build YYYY-MM-DD string
+  const dateStr = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+
+  // Final validation: ensure it's a real date and in the past
+  const d = new Date(dateStr + "T00:00:00Z");
+  if (isNaN(d.getTime())) return null;
+  if (
+    d.getUTCFullYear() !== year ||
+    d.getUTCMonth() + 1 !== month ||
+    d.getUTCDate() !== day
+  )
+    return null;
+  if (d > new Date()) return null;
+
+  return dateStr;
 }
 
 // ============================================================
@@ -595,7 +622,24 @@ export async function handleMizukagami(
 
     // --- Case 2: Waiting for birthday ---
     if (d1Session.state === "waiting_birthday") {
+      // If user sends trigger word again, reset session
+      if (isMizukagamiTrigger(text)) {
+        await updateD1Session(db, d1Session.id, { state: "completed" });
+        const newSession = await createD1Session(db, lineUserId);
+        console.log(
+          `[mizukagami] Session reset for ${lineUserId}, new session: ${newSession.id}`,
+        );
+        await lineClient.replyMessage(replyToken, [
+          {
+            type: "text",
+            text: "水鏡の水面が静かに揺れています。\n\nあなたの12の叡智を映し出すために、\n生年月日を教えてください。\n\n例: 19810324",
+          },
+        ]);
+        return { handled: true };
+      }
+
       const birthday = parseBirthday(text);
+      console.log(`[mizukagami] parseBirthday("${text}") => ${birthday}`);
       if (!birthday) {
         await lineClient.replyMessage(replyToken, [
           {
