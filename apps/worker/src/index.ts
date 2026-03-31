@@ -46,6 +46,7 @@ export type Env = {
     WORKER_URL: string;
     SAP_API_URL: string;
     SAP_API_KEY: string;
+    VERCEL_PROTECTION_BYPASS: string;
   };
 };
 

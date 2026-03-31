@@ -87,6 +87,7 @@ webhook.post("/webhook", async (c) => {
           c.env.WORKER_URL || new URL(c.req.url).origin,
           c.env.SAP_API_URL,
           c.env.SAP_API_KEY,
+          c.env.VERCEL_PROTECTION_BYPASS,
         );
       } catch (err) {
         console.error("Error handling webhook event:", err);
@@ -108,6 +109,7 @@ async function handleEvent(
   workerUrl?: string,
   sapApiUrl?: string,
   sapApiKey?: string,
+  vercelBypass?: string,
 ): Promise<void> {
   if (event.type === "follow") {
     const userId =
@@ -307,6 +309,7 @@ async function handleEvent(
         event.replyToken,
         sapApiUrl,
         sapApiKey,
+        vercelBypass,
       );
       if (mizuResult.handled) {
         // 水鏡セッションで処理済み — 他のハンドラーをスキップ

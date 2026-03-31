@@ -240,17 +240,33 @@ function parseBirthday(text: string): string | null {
 }
 
 // ============================================================
-// API Clients
+// API Clients (with Vercel Protection Bypass)
 // ============================================================
+
+/** Build common headers for SAP API calls. Includes Vercel bypass if configured. */
+function buildSapHeaders(
+  sapApiKey: string,
+  vercelBypass?: string,
+): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "x-api-key": sapApiKey,
+  };
+  if (vercelBypass) {
+    headers["x-vercel-protection-bypass"] = vercelBypass;
+  }
+  return headers;
+}
 
 async function callDiagnosisApi(
   sapApiUrl: string,
   sapApiKey: string,
   birthday: string,
+  vercelBypass?: string,
 ): Promise<DiagnosisApiResponse> {
   const res = await fetch(`${sapApiUrl}/api/line/diagnosis`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "x-api-key": sapApiKey },
+    headers: buildSapHeaders(sapApiKey, vercelBypass),
     body: JSON.stringify({ birthday, mode: "innate_only" }),
   });
   if (!res.ok) {
@@ -264,10 +280,11 @@ async function callMirrorSessionApi(
   sapApiUrl: string,
   sapApiKey: string,
   body: Record<string, unknown>,
+  vercelBypass?: string,
 ): Promise<MirrorSessionApiResponse> {
   const res = await fetch(`${sapApiUrl}/api/line/mirror-session`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "x-api-key": sapApiKey },
+    headers: buildSapHeaders(sapApiKey, vercelBypass),
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -281,10 +298,11 @@ async function checkMirrorSessionStatus(
   sapApiUrl: string,
   sapApiKey: string,
   lineUserId: string,
+  vercelBypass?: string,
 ): Promise<MirrorSessionStatusResponse> {
   const res = await fetch(`${sapApiUrl}/api/line/mirror-session`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "x-api-key": sapApiKey },
+    headers: buildSapHeaders(sapApiKey, vercelBypass),
     body: JSON.stringify({ action: "status", line_user_id: lineUserId }),
   });
   if (!res.ok) return { hasActiveSession: false, session: null };
@@ -526,6 +544,7 @@ export async function handleMizukagami(
   replyToken: string,
   sapApiUrl: string,
   sapApiKey: string,
+  vercelBypass?: string,
 ): Promise<MizukagamiResult> {
   try {
     await ensureMizukagamiTable(db);
@@ -540,6 +559,7 @@ export async function handleMizukagami(
           sapApiUrl,
           sapApiKey,
           lineUserId,
+          vercelBypass,
         );
         if (!sapStatus.hasActiveSession) return { handled: false };
         // SAP has active session but D1 doesn't — create D1 record and continue
@@ -558,6 +578,7 @@ export async function handleMizukagami(
           replyToken,
           sapApiUrl,
           sapApiKey,
+          vercelBypass,
         );
       }
 
@@ -588,7 +609,12 @@ export async function handleMizukagami(
       // Call diagnosis API
       let diagResult: DiagnosisApiResponse;
       try {
-        diagResult = await callDiagnosisApi(sapApiUrl, sapApiKey, birthday);
+        diagResult = await callDiagnosisApi(
+          sapApiUrl,
+          sapApiKey,
+          birthday,
+          vercelBypass,
+        );
       } catch (err) {
         console.error("[mizukagami] Diagnosis API failed:", err);
         await lineClient.replyMessage(replyToken, [
@@ -619,11 +645,16 @@ export async function handleMizukagami(
       // Start mirror session
       let sessionResponse: MirrorSessionApiResponse;
       try {
-        sessionResponse = await callMirrorSessionApi(sapApiUrl, sapApiKey, {
-          action: "start",
-          line_user_id: lineUserId,
-          innate_profile: innateProfile,
-        });
+        sessionResponse = await callMirrorSessionApi(
+          sapApiUrl,
+          sapApiKey,
+          {
+            action: "start",
+            line_user_id: lineUserId,
+            innate_profile: innateProfile,
+          },
+          vercelBypass,
+        );
       } catch (err) {
         console.error("[mizukagami] Mirror session start failed:", err);
         await lineClient.replyMessage(replyToken, [
@@ -672,6 +703,7 @@ export async function handleMizukagami(
         replyToken,
         sapApiUrl,
         sapApiKey,
+        vercelBypass,
       );
     }
 
@@ -694,20 +726,27 @@ async function handleActiveSession(
   replyToken: string,
   sapApiUrl: string,
   sapApiKey: string,
+  vercelBypass?: string,
 ): Promise<MizukagamiResult> {
   // Get previous state for diff
   const prevStatus = await checkMirrorSessionStatus(
     sapApiUrl,
     sapApiKey,
     lineUserId,
+    vercelBypass,
   );
   const previousDisclosed = prevStatus.session?.disclosed_traditions ?? [];
 
-  const apiResponse = await callMirrorSessionApi(sapApiUrl, sapApiKey, {
-    action: "message",
-    line_user_id: lineUserId,
-    text,
-  });
+  const apiResponse = await callMirrorSessionApi(
+    sapApiUrl,
+    sapApiKey,
+    {
+      action: "message",
+      line_user_id: lineUserId,
+      text,
+    },
+    vercelBypass,
+  );
 
   const messages: Array<Record<string, unknown>> = [];
 
