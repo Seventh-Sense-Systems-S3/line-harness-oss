@@ -300,6 +300,7 @@ async function handleEvent(
     // MIZUKAGAMI Mirror Session — 水鏡v2対話フロー（最優先で処理）
     if (sapApiUrl && sapApiKey) {
       const mizuResult = await handleMizukagami(
+        db,
         lineClient,
         userId,
         incomingText,

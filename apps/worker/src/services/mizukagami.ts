@@ -1,16 +1,18 @@
 /**
  * MIZUKAGAMI Mirror Session — CF Workers → Soul Agent Platform BFF
  *
- * LINE上での水鏡v2対話フロー:
- * 1. ユーザーが「水鏡」等のキーワードを送信 → セッション開始
- * 2. アクティブセッション中の全テキスト → mirror-session API に転送
- * 3. APIレスポンスからテキスト + Flex Message を生成して返信
+ * フロー:
+ * 1. ユーザーが「水鏡」→ D1に状態 waiting_birthday を記録
+ * 2. 生年月日入力 → diagnosis API (innate_only) → innateProfile取得
+ * 3. innateProfile → mirror-session API (action=start) → 対話開始
+ * 4. 以降のテキスト → mirror-session API (action=message) → 対話継続
+ * 5. 完了時 → Web Report リンク送信
  */
 
 import { LineClient } from "@line-crm/line-sdk";
 
 // ============================================================
-// Types (mirror-session v2 API response)
+// Types
 // ============================================================
 
 interface MirrorSessionApiResponse {
@@ -58,6 +60,25 @@ interface WaterMirrorCardV2 {
   };
 }
 
+interface DiagnosisApiResponse {
+  diagnosis: {
+    innate: {
+      primary: string;
+      confidence: number;
+      details: Record<string, unknown>;
+    };
+  };
+  unleash: {
+    kaku: { name: string; description: string };
+    honryou: { name: string; description: string };
+    miushinai: { name: string; description: string };
+  } | null;
+  calculatorDetails: Record<
+    string,
+    { tradition: string; weight: number; data: Record<string, unknown> }
+  >;
+}
+
 interface MirrorSessionStatusResponse {
   hasActiveSession: boolean;
   session: {
@@ -66,6 +87,116 @@ interface MirrorSessionStatusResponse {
     disclosed_traditions: string[];
     remaining_traditions: string[];
   } | null;
+}
+
+type MizukagamiState = "waiting_birthday" | "active" | "completed";
+
+interface MizukagamiD1Row {
+  id: string;
+  line_user_id: string;
+  state: MizukagamiState;
+  birth_date: string | null;
+  sap_session_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// ============================================================
+// D1 Table setup (idempotent)
+// ============================================================
+
+export async function ensureMizukagamiTable(db: D1Database): Promise<void> {
+  await db
+    .prepare(
+      `
+    CREATE TABLE IF NOT EXISTS mizukagami_sessions (
+      id TEXT PRIMARY KEY,
+      line_user_id TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT 'waiting_birthday',
+      birth_date TEXT,
+      sap_session_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `,
+    )
+    .run();
+  // Index for quick lookup
+  await db
+    .prepare(
+      `
+    CREATE INDEX IF NOT EXISTS idx_mizukagami_sessions_user_state
+    ON mizukagami_sessions (line_user_id, state)
+  `,
+    )
+    .run();
+}
+
+// ============================================================
+// D1 Operations
+// ============================================================
+
+async function getActiveD1Session(
+  db: D1Database,
+  lineUserId: string,
+): Promise<MizukagamiD1Row | null> {
+  return db
+    .prepare(
+      "SELECT * FROM mizukagami_sessions WHERE line_user_id = ? AND state IN ('waiting_birthday', 'active') ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(lineUserId)
+    .first<MizukagamiD1Row>();
+}
+
+async function createD1Session(
+  db: D1Database,
+  lineUserId: string,
+): Promise<MizukagamiD1Row> {
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  await db
+    .prepare(
+      "INSERT INTO mizukagami_sessions (id, line_user_id, state, created_at, updated_at) VALUES (?, ?, 'waiting_birthday', ?, ?)",
+    )
+    .bind(id, lineUserId, now, now)
+    .run();
+  return {
+    id,
+    line_user_id: lineUserId,
+    state: "waiting_birthday",
+    birth_date: null,
+    sap_session_id: null,
+    created_at: now,
+    updated_at: now,
+  };
+}
+
+async function updateD1Session(
+  db: D1Database,
+  id: string,
+  updates: Partial<
+    Pick<MizukagamiD1Row, "state" | "birth_date" | "sap_session_id">
+  >,
+): Promise<void> {
+  const sets: string[] = ["updated_at = ?"];
+  const vals: string[] = [new Date().toISOString()];
+  if (updates.state) {
+    sets.push("state = ?");
+    vals.push(updates.state);
+  }
+  if (updates.birth_date) {
+    sets.push("birth_date = ?");
+    vals.push(updates.birth_date);
+  }
+  if (updates.sap_session_id) {
+    sets.push("sap_session_id = ?");
+    vals.push(updates.sap_session_id);
+  }
+  vals.push(id);
+  await db
+    .prepare(`UPDATE mizukagami_sessions SET ${sets.join(", ")} WHERE id = ?`)
+    .bind(...vals)
+    .run();
 }
 
 // ============================================================
@@ -86,8 +217,48 @@ export function isMizukagamiTrigger(text: string): boolean {
 }
 
 // ============================================================
-// API Client
+// Birthday parsing
 // ============================================================
+
+function parseBirthday(text: string): string | null {
+  const trimmed = text.trim().replace(/[\s\-\/\.]/g, "");
+  // YYYYMMDD (8 digits)
+  const m8 = trimmed.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (m8) {
+    const dateStr = `${m8[1]}-${m8[2]}-${m8[3]}`;
+    const d = new Date(dateStr);
+    if (!isNaN(d.getTime()) && d < new Date()) return dateStr;
+  }
+  // Try YYYY-MM-DD directly
+  const mDash = text.trim().match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (mDash) {
+    const dateStr = `${mDash[1]}-${mDash[2].padStart(2, "0")}-${mDash[3].padStart(2, "0")}`;
+    const d = new Date(dateStr);
+    if (!isNaN(d.getTime()) && d < new Date()) return dateStr;
+  }
+  return null;
+}
+
+// ============================================================
+// API Clients
+// ============================================================
+
+async function callDiagnosisApi(
+  sapApiUrl: string,
+  sapApiKey: string,
+  birthday: string,
+): Promise<DiagnosisApiResponse> {
+  const res = await fetch(`${sapApiUrl}/api/line/diagnosis`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-api-key": sapApiKey },
+    body: JSON.stringify({ birthday, mode: "innate_only" }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Diagnosis API error: ${res.status} ${text}`);
+  }
+  return (await res.json()) as DiagnosisApiResponse;
+}
 
 async function callMirrorSessionApi(
   sapApiUrl: string,
@@ -96,18 +267,13 @@ async function callMirrorSessionApi(
 ): Promise<MirrorSessionApiResponse> {
   const res = await fetch(`${sapApiUrl}/api/line/mirror-session`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": sapApiKey,
-    },
+    headers: { "Content-Type": "application/json", "x-api-key": sapApiKey },
     body: JSON.stringify(body),
   });
-
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Mirror session API error: ${res.status} ${text}`);
   }
-
   return (await res.json()) as MirrorSessionApiResponse;
 }
 
@@ -118,19 +284,15 @@ async function checkMirrorSessionStatus(
 ): Promise<MirrorSessionStatusResponse> {
   const res = await fetch(`${sapApiUrl}/api/line/mirror-session`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": sapApiKey,
-    },
+    headers: { "Content-Type": "application/json", "x-api-key": sapApiKey },
     body: JSON.stringify({ action: "status", line_user_id: lineUserId }),
   });
-
   if (!res.ok) return { hasActiveSession: false, session: null };
   return (await res.json()) as MirrorSessionStatusResponse;
 }
 
 // ============================================================
-// Tradition colors (for Flex Messages)
+// Tradition colors
 // ============================================================
 
 const TRADITION_COLORS: Record<string, { color: string; label: string }> = {
@@ -149,7 +311,7 @@ const TRADITION_COLORS: Record<string, { color: string; label: string }> = {
 };
 
 // ============================================================
-// Flex Message builders (simplified for CF Workers)
+// Flex Message builders
 // ============================================================
 
 function buildProgressDots(
@@ -158,14 +320,13 @@ function buildProgressDots(
 ): Record<string, unknown> {
   const dots = [];
   for (let i = 0; i < total; i++) {
-    const isRevealed = i < disclosed.length;
     dots.push({
       type: "box",
       layout: "vertical",
       width: "6px",
       height: "6px",
       cornerRadius: "3px",
-      backgroundColor: isRevealed ? "#7EB8D8" : "#1a1a2e",
+      backgroundColor: i < disclosed.length ? "#7EB8D8" : "#1a1a2e",
     });
   }
   return {
@@ -181,13 +342,13 @@ function buildProgressDots(
 function buildDisclosureFlexBubble(
   disclosed: string[],
   newTraditions: string[],
-  message: string,
 ): Record<string, unknown> {
   const tradContents = newTraditions.map((t) => {
     const tc = TRADITION_COLORS[t] ?? { color: "#8e8ea8", label: "" };
     return {
       type: "box",
       layout: "horizontal",
+      margin: "sm",
       contents: [
         {
           type: "box",
@@ -206,10 +367,8 @@ function buildDisclosureFlexBubble(
           margin: "sm",
         },
       ],
-      margin: "sm",
     };
   });
-
   return {
     type: "bubble",
     size: "mega",
@@ -244,7 +403,6 @@ function buildFinalCardFlexBubble(
     { icon: "🧭", label: "WHERE", text: card.action_guidance.where },
     { icon: "👥", label: "WHO", text: card.action_guidance.who },
   ];
-
   const userWordBubbles = card.user_words.slice(0, 8).map((w) => ({
     type: "box",
     layout: "vertical",
@@ -255,7 +413,6 @@ function buildFinalCardFlexBubble(
     paddingStart: "10px",
     paddingEnd: "10px",
   }));
-
   return {
     type: "bubble",
     size: "mega",
@@ -265,7 +422,6 @@ function buildFinalCardFlexBubble(
       backgroundColor: "#050008",
       paddingAll: "20px",
       contents: [
-        // Header gradient bar (simulated with colored box)
         {
           type: "box",
           layout: "horizontal",
@@ -282,7 +438,6 @@ function buildFinalCardFlexBubble(
             { type: "filler" },
           ],
         },
-        // User essence
         {
           type: "text",
           text: card.user_essence,
@@ -293,7 +448,6 @@ function buildFinalCardFlexBubble(
           margin: "lg",
         },
         { type: "separator", margin: "lg", color: "#1a1a2e" },
-        // User words
         {
           type: "text",
           text: "YOUR WORDS",
@@ -311,7 +465,6 @@ function buildFinalCardFlexBubble(
           margin: "sm",
         },
         { type: "separator", margin: "lg", color: "#1a1a2e" },
-        // Action guidance
         {
           type: "text",
           text: "ACTION GUIDANCE",
@@ -322,6 +475,7 @@ function buildFinalCardFlexBubble(
         ...actionItems.map((item) => ({
           type: "box",
           layout: "horizontal",
+          margin: "sm",
           contents: [
             {
               type: "text",
@@ -339,10 +493,8 @@ function buildFinalCardFlexBubble(
               flex: 5,
             },
           ],
-          margin: "sm",
         })),
         { type: "separator", margin: "lg", color: "#1a1a2e" },
-        // Closing
         {
           type: "text",
           text: card.closing_message,
@@ -351,7 +503,6 @@ function buildFinalCardFlexBubble(
           wrap: true,
           align: "center",
           margin: "lg",
-          style: "italic",
         },
       ],
     },
@@ -359,7 +510,7 @@ function buildFinalCardFlexBubble(
 }
 
 // ============================================================
-// Main handler — called from webhook.ts
+// Main handler
 // ============================================================
 
 export interface MizukagamiResult {
@@ -367,101 +518,227 @@ export interface MizukagamiResult {
   error?: string;
 }
 
-/**
- * Handle a MIZUKAGAMI mirror session interaction.
- * Returns { handled: true } if the message was processed, false to fall through to other handlers.
- */
 export async function handleMizukagami(
+  db: D1Database,
   lineClient: LineClient,
   lineUserId: string,
   text: string,
   replyToken: string,
   sapApiUrl: string,
   sapApiKey: string,
-  innateProfile?: Record<string, unknown>,
 ): Promise<MizukagamiResult> {
   try {
-    // 1. Check for active session
-    const status = await checkMirrorSessionStatus(
-      sapApiUrl,
-      sapApiKey,
-      lineUserId,
-    );
+    await ensureMizukagamiTable(db);
 
-    if (!status.hasActiveSession && !isMizukagamiTrigger(text)) {
-      return { handled: false };
+    const d1Session = await getActiveD1Session(db, lineUserId);
+
+    // --- Case 1: No D1 session, check if trigger ---
+    if (!d1Session) {
+      if (!isMizukagamiTrigger(text)) {
+        // Also check SAP for active mirror session (resuming after worker restart)
+        const sapStatus = await checkMirrorSessionStatus(
+          sapApiUrl,
+          sapApiKey,
+          lineUserId,
+        );
+        if (!sapStatus.hasActiveSession) return { handled: false };
+        // SAP has active session but D1 doesn't — create D1 record and continue
+        const newD1 = await createD1Session(db, lineUserId);
+        await updateD1Session(db, newD1.id, {
+          state: "active",
+          sap_session_id: sapStatus.session?.session_id ?? null,
+        });
+        // Fall through to Case 3 (active session message)
+        return await handleActiveSession(
+          db,
+          newD1.id,
+          lineClient,
+          lineUserId,
+          text,
+          replyToken,
+          sapApiUrl,
+          sapApiKey,
+        );
+      }
+
+      // Trigger detected — start new session
+      await createD1Session(db, lineUserId);
+      await lineClient.replyMessage(replyToken, [
+        {
+          type: "text",
+          text: "水鏡の水面が静かに揺れています。\n\nあなたの12の叡智を映し出すために、\n生年月日を教えてください。\n\n例: 19810324",
+        },
+      ]);
+      return { handled: true };
     }
 
-    let apiResponse: MirrorSessionApiResponse;
-
-    if (!status.hasActiveSession) {
-      // 2a. Start new session
-      if (!innateProfile) {
-        // No profile available — need to run diagnosis first
-        // For now, reply with instruction
+    // --- Case 2: Waiting for birthday ---
+    if (d1Session.state === "waiting_birthday") {
+      const birthday = parseBirthday(text);
+      if (!birthday) {
         await lineClient.replyMessage(replyToken, [
           {
             type: "text",
-            text: "水鏡の対話を始めるには、先に生年月日の診断が必要です。\n生年月日を「YYYY-MM-DD」形式で送ってください。",
+            text: "生年月日の形式が正しくありません。\n8桁の数字で入力してください。\n\n例: 19810324",
           },
         ]);
         return { handled: true };
       }
 
-      apiResponse = await callMirrorSessionApi(sapApiUrl, sapApiKey, {
-        action: "start",
-        line_user_id: lineUserId,
-        innate_profile: innateProfile,
+      // Call diagnosis API
+      let diagResult: DiagnosisApiResponse;
+      try {
+        diagResult = await callDiagnosisApi(sapApiUrl, sapApiKey, birthday);
+      } catch (err) {
+        console.error("[mizukagami] Diagnosis API failed:", err);
+        await lineClient.replyMessage(replyToken, [
+          {
+            type: "text",
+            text: "診断の計算中にエラーが発生しました。\nもう一度生年月日を送ってみてください。",
+          },
+        ]);
+        return { handled: true };
+      }
+
+      // Build innateProfile from diagnosis response
+      const innateProfile = {
+        spiralPrimary: diagResult.diagnosis.innate.primary,
+        confidence: diagResult.diagnosis.innate.confidence,
+        kaku: diagResult.unleash?.kaku ?? { name: "unknown", description: "" },
+        honryou: diagResult.unleash?.honryou ?? {
+          name: "unknown",
+          description: "",
+        },
+        miushinai: diagResult.unleash?.miushinai ?? {
+          name: "unknown",
+          description: "",
+        },
+        calculatorDetails: diagResult.calculatorDetails,
+      };
+
+      // Start mirror session
+      let sessionResponse: MirrorSessionApiResponse;
+      try {
+        sessionResponse = await callMirrorSessionApi(sapApiUrl, sapApiKey, {
+          action: "start",
+          line_user_id: lineUserId,
+          innate_profile: innateProfile,
+        });
+      } catch (err) {
+        console.error("[mizukagami] Mirror session start failed:", err);
+        await lineClient.replyMessage(replyToken, [
+          {
+            type: "text",
+            text: "水鏡のセッション開始に失敗しました。\nしばらくしてからもう一度お試しください。",
+          },
+        ]);
+        return { handled: true };
+      }
+
+      // Update D1 state
+      await updateD1Session(db, d1Session.id, {
+        state: "active",
+        birth_date: birthday,
+        sap_session_id: sessionResponse.session_id,
       });
-    } else {
-      // 2b. Continue existing session
-      apiResponse = await callMirrorSessionApi(sapApiUrl, sapApiKey, {
-        action: "message",
-        line_user_id: lineUserId,
+
+      // Send response messages
+      const messages: Array<Record<string, unknown>> = [];
+      if (sessionResponse.message) {
+        messages.push({ type: "text", text: sessionResponse.message });
+      }
+      const disclosed = sessionResponse.disclosed_traditions ?? [];
+      if (disclosed.length > 0) {
+        messages.push({
+          type: "flex",
+          altText: `${disclosed.join("・")} が開示されました (${disclosed.length}/12)`,
+          contents: buildDisclosureFlexBubble(disclosed, disclosed),
+        });
+      }
+      if (messages.length > 0) {
+        await lineClient.replyMessage(replyToken, messages.slice(0, 5));
+      }
+      return { handled: true };
+    }
+
+    // --- Case 3: Active session — forward to mirror-session API ---
+    if (d1Session.state === "active") {
+      return await handleActiveSession(
+        db,
+        d1Session.id,
+        lineClient,
+        lineUserId,
         text,
-      });
-    }
-
-    // 3. Build LINE messages
-    const messages: Array<Record<string, unknown>> = [];
-
-    // Text message
-    if (apiResponse.message) {
-      messages.push({ type: "text", text: apiResponse.message });
-    }
-
-    // Flex Message for tradition disclosure (if new traditions were disclosed)
-    const disclosed = apiResponse.disclosed_traditions ?? [];
-    const previousDisclosed = status.session?.disclosed_traditions ?? [];
-    const newTraditions = disclosed.filter(
-      (t) => !previousDisclosed.includes(t),
-    );
-
-    if (newTraditions.length > 0 && !apiResponse.card) {
-      const flexBubble = buildDisclosureFlexBubble(
-        disclosed,
-        newTraditions,
-        apiResponse.message,
+        replyToken,
+        sapApiUrl,
+        sapApiKey,
       );
-      messages.push({
-        type: "flex",
-        altText: `${newTraditions.join("・")} が開示されました (${disclosed.length}/12)`,
-        contents: flexBubble,
-      });
     }
 
-    // Final card Flex Message
-    if (apiResponse.card) {
-      const cardBubble = buildFinalCardFlexBubble(apiResponse.card);
-      messages.push({
-        type: "flex",
-        altText: "水鏡カード — あなたの12叡智の統合",
-        contents: cardBubble,
-      });
-    }
+    return { handled: false };
+  } catch (err) {
+    console.error("[mizukagami] Error:", err);
+    return {
+      handled: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
 
-    // Session completed — add report link
-    if (apiResponse.sessionCompleted && apiResponse.session_id) {
+async function handleActiveSession(
+  db: D1Database,
+  d1SessionId: string,
+  lineClient: LineClient,
+  lineUserId: string,
+  text: string,
+  replyToken: string,
+  sapApiUrl: string,
+  sapApiKey: string,
+): Promise<MizukagamiResult> {
+  // Get previous state for diff
+  const prevStatus = await checkMirrorSessionStatus(
+    sapApiUrl,
+    sapApiKey,
+    lineUserId,
+  );
+  const previousDisclosed = prevStatus.session?.disclosed_traditions ?? [];
+
+  const apiResponse = await callMirrorSessionApi(sapApiUrl, sapApiKey, {
+    action: "message",
+    line_user_id: lineUserId,
+    text,
+  });
+
+  const messages: Array<Record<string, unknown>> = [];
+
+  if (apiResponse.message) {
+    messages.push({ type: "text", text: apiResponse.message });
+  }
+
+  // Tradition disclosure Flex
+  const disclosed = apiResponse.disclosed_traditions ?? [];
+  const newTraditions = disclosed.filter((t) => !previousDisclosed.includes(t));
+  if (newTraditions.length > 0 && !apiResponse.card) {
+    messages.push({
+      type: "flex",
+      altText: `${newTraditions.join("・")} が開示されました (${disclosed.length}/12)`,
+      contents: buildDisclosureFlexBubble(disclosed, newTraditions),
+    });
+  }
+
+  // Final card
+  if (apiResponse.card) {
+    messages.push({
+      type: "flex",
+      altText: "水鏡カード — あなたの12叡智の統合",
+      contents: buildFinalCardFlexBubble(apiResponse.card),
+    });
+  }
+
+  // Session completed
+  if (apiResponse.sessionCompleted) {
+    await updateD1Session(db, d1SessionId, { state: "completed" });
+    if (apiResponse.session_id) {
       const reportUrl = `${sapApiUrl}/mizukagami/report/${apiResponse.session_id}`;
       messages.push({
         type: "flex",
@@ -486,6 +763,8 @@ export async function handleMizukagami(
           footer: {
             type: "box",
             layout: "vertical",
+            backgroundColor: "#07070d",
+            paddingAll: "12px",
             contents: [
               {
                 type: "button",
@@ -498,24 +777,15 @@ export async function handleMizukagami(
                 color: "#7EB8D8",
               },
             ],
-            backgroundColor: "#07070d",
-            paddingAll: "12px",
           },
         },
       });
     }
-
-    // Send (max 5 messages per reply)
-    if (messages.length > 0) {
-      await lineClient.replyMessage(replyToken, messages.slice(0, 5));
-    }
-
-    return { handled: true };
-  } catch (err) {
-    console.error("[mizukagami] Error:", err);
-    return {
-      handled: false,
-      error: err instanceof Error ? err.message : String(err),
-    };
   }
+
+  if (messages.length > 0) {
+    await lineClient.replyMessage(replyToken, messages.slice(0, 5));
+  }
+
+  return { handled: true };
 }
