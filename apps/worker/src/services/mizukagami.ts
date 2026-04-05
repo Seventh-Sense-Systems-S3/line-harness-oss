@@ -309,11 +309,19 @@ async function callMirrorSessionApi(
   body: Record<string, unknown>,
   vercelBypass?: string,
 ): Promise<MirrorSessionApiResponse> {
-  const res = await fetch(`${sapApiUrl}/api/line/mirror-session`, {
-    method: "POST",
-    headers: buildSapHeaders(sapApiKey, vercelBypass),
-    body: JSON.stringify(body),
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 55_000);
+  let res: Response;
+  try {
+    res = await fetch(`${sapApiUrl}/api/line/mirror-session`, {
+      method: "POST",
+      headers: buildSapHeaders(sapApiKey, vercelBypass),
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Mirror session API error: ${res.status} ${text}`);
@@ -710,14 +718,7 @@ export async function handleMizukagami(
         return { handled: true };
       }
 
-      // Update D1 state
-      await updateD1Session(db, d1Session.id, {
-        state: "active",
-        birth_date: birthday,
-        sap_session_id: sessionResponse.session_id,
-      });
-
-      // Send response messages
+      // Send response messages first (replyToken expires quickly)
       const messages: Array<Record<string, unknown>> = [];
       if (sessionResponse.message) {
         messages.push({ type: "text", text: sessionResponse.message });
@@ -732,6 +733,17 @@ export async function handleMizukagami(
       }
       if (messages.length > 0) {
         await lineClient.replyMessage(replyToken, messages.slice(0, 5));
+      }
+
+      // Update D1 state (after reply so D1 errors don't block the response)
+      try {
+        await updateD1Session(db, d1Session.id, {
+          state: "active",
+          birth_date: birthday,
+          sap_session_id: sessionResponse.session_id,
+        });
+      } catch (err) {
+        console.error("[mizukagami] D1 state update failed:", err);
       }
       return { handled: true };
     }
@@ -781,16 +793,30 @@ async function handleActiveSession(
   );
   const previousDisclosed = prevStatus.session?.disclosed_traditions ?? [];
 
-  const apiResponse = await callMirrorSessionApi(
-    sapApiUrl,
-    sapApiKey,
-    {
-      action: "message",
-      line_user_id: lineUserId,
-      text,
-    },
-    vercelBypass,
-  );
+  let apiResponse: MirrorSessionApiResponse;
+  try {
+    apiResponse = await callMirrorSessionApi(
+      sapApiUrl,
+      sapApiKey,
+      {
+        action: "message",
+        line_user_id: lineUserId,
+        text,
+      },
+      vercelBypass,
+    );
+  } catch (err) {
+    console.error("[mizukagami] Active session API error:", err);
+    // Mark D1 session as completed to prevent loop
+    await updateD1Session(db, d1SessionId, { state: "completed" });
+    await lineClient.replyMessage(replyToken, [
+      {
+        type: "text",
+        text: "水鏡のセッションでエラーが発生しました。\n「水鏡」と送ると最初からやり直せます。",
+      },
+    ]);
+    return { handled: true };
+  }
 
   const messages: Array<Record<string, unknown>> = [];
 
