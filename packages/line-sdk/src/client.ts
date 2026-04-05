@@ -7,9 +7,9 @@ import type {
   ReplyMessageRequest,
   RichMenuObject,
   UserProfile,
-} from './types.js';
+} from "./types.js";
 
-const LINE_API_BASE = 'https://api.line.me/v2/bot';
+const LINE_API_BASE = "https://api.line.me/v2/bot";
 
 export class LineClient {
   constructor(private readonly channelAccessToken: string) {}
@@ -19,34 +19,34 @@ export class LineClient {
   private async request<T = unknown>(
     path: string,
     body: object,
-    method: 'GET' | 'POST' | 'DELETE' = 'POST',
+    method: "GET" | "POST" | "DELETE" = "POST",
   ): Promise<T> {
     const url = `${LINE_API_BASE}${path}`;
 
     const options: RequestInit = {
       method,
       headers: {
-        'Content-Type': 'application/json',
+        "Content-Type": "application/json",
         Authorization: `Bearer ${this.channelAccessToken}`,
       },
     };
 
-    if (method !== 'GET' && method !== 'DELETE') {
+    if (method !== "GET" && method !== "DELETE") {
       options.body = JSON.stringify(body);
     }
 
     const res = await fetch(url, options);
 
     if (!res.ok) {
-      const text = await res.text().catch(() => '');
+      const text = await res.text().catch(() => "");
       throw new Error(
         `LINE API error: ${res.status} ${res.statusText} — ${text}`,
       );
     }
 
     // Some endpoints (e.g. push, reply) return an empty body with 200.
-    const contentType = res.headers.get('content-type') ?? '';
-    if (contentType.includes('application/json')) {
+    const contentType = res.headers.get("content-type") ?? "";
+    if (contentType.includes("application/json")) {
       return res.json() as Promise<T>;
     }
 
@@ -59,54 +59,64 @@ export class LineClient {
     return this.request<UserProfile>(
       `/profile/${encodeURIComponent(userId)}`,
       {},
-      'GET',
+      "GET",
     );
+  }
+
+  // ─── Loading Animation ────────────────────────────────────────────────────
+
+  /** Show typing-like loading animation in chat (5-60 seconds) */
+  async showLoadingAnimation(
+    chatId: string,
+    loadingSeconds: number = 20,
+  ): Promise<void> {
+    await this.request("/chat/loading", {
+      chatId,
+      loadingSeconds: Math.min(60, Math.max(5, loadingSeconds)),
+    });
   }
 
   // ─── Messaging ───────────────────────────────────────────────────────────
 
   async pushMessage(to: string, messages: Message[]): Promise<void> {
     const body: PushMessageRequest = { to, messages };
-    await this.request('/message/push', body);
+    await this.request("/message/push", body);
   }
 
   async multicast(to: string[], messages: Message[]): Promise<void> {
     const body: MulticastRequest = { to, messages };
-    await this.request('/message/multicast', body);
+    await this.request("/message/multicast", body);
   }
 
   async broadcast(messages: Message[]): Promise<void> {
     const body: BroadcastRequest = { messages };
-    await this.request('/message/broadcast', body);
+    await this.request("/message/broadcast", body);
   }
 
-  async replyMessage(
-    replyToken: string,
-    messages: Message[],
-  ): Promise<void> {
+  async replyMessage(replyToken: string, messages: Message[]): Promise<void> {
     const body: ReplyMessageRequest = { replyToken, messages };
-    await this.request('/message/reply', body);
+    await this.request("/message/reply", body);
   }
 
   // ─── Rich Menu ────────────────────────────────────────────────────────────
 
   async getRichMenuList(): Promise<{ richmenus: RichMenuObject[] }> {
     return this.request<{ richmenus: RichMenuObject[] }>(
-      '/richmenu/list',
+      "/richmenu/list",
       {},
-      'GET',
+      "GET",
     );
   }
 
   async createRichMenu(menu: RichMenuObject): Promise<{ richMenuId: string }> {
-    return this.request<{ richMenuId: string }>('/richmenu', menu);
+    return this.request<{ richMenuId: string }>("/richmenu", menu);
   }
 
   async deleteRichMenu(richMenuId: string): Promise<void> {
     await this.request(
       `/richmenu/${encodeURIComponent(richMenuId)}`,
       {},
-      'DELETE',
+      "DELETE",
     );
   }
 
@@ -128,7 +138,7 @@ export class LineClient {
     await this.request(
       `/user/${encodeURIComponent(userId)}/richmenu`,
       {},
-      'DELETE',
+      "DELETE",
     );
   }
 
@@ -136,14 +146,14 @@ export class LineClient {
     return this.request<{ richMenuId: string }>(
       `/user/${encodeURIComponent(userId)}/richmenu`,
       {},
-      'GET',
+      "GET",
     );
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────────────
 
   async pushTextMessage(to: string, text: string): Promise<void> {
-    await this.pushMessage(to, [{ type: 'text', text }]);
+    await this.pushMessage(to, [{ type: "text", text }]);
   }
 
   async pushFlexMessage(
@@ -151,7 +161,7 @@ export class LineClient {
     altText: string,
     contents: FlexContainer,
   ): Promise<void> {
-    await this.pushMessage(to, [{ type: 'flex', altText, contents }]);
+    await this.pushMessage(to, [{ type: "flex", altText, contents }]);
   }
 
   // ─── Rich Menu Image Upload ─────────────────────────────────────────────
@@ -160,20 +170,22 @@ export class LineClient {
   async uploadRichMenuImage(
     richMenuId: string,
     imageData: ArrayBuffer,
-    contentType: 'image/png' | 'image/jpeg' = 'image/png',
+    contentType: "image/png" | "image/jpeg" = "image/png",
   ): Promise<void> {
     const url = `https://api-data.line.me/v2/bot/richmenu/${encodeURIComponent(richMenuId)}/content`;
     const res = await fetch(url, {
-      method: 'POST',
+      method: "POST",
       headers: {
-        'Content-Type': contentType,
+        "Content-Type": contentType,
         Authorization: `Bearer ${this.channelAccessToken}`,
       },
       body: imageData,
     });
     if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`LINE API error: ${res.status} ${res.statusText} — ${text}`);
+      const text = await res.text().catch(() => "");
+      throw new Error(
+        `LINE API error: ${res.status} ${res.statusText} — ${text}`,
+      );
     }
   }
 }

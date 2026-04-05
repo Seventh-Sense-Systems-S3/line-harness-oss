@@ -89,7 +89,11 @@ interface MirrorSessionStatusResponse {
   } | null;
 }
 
-type MizukagamiState = "waiting_birthday" | "active" | "completed";
+type MizukagamiState =
+  | "waiting_birthday"
+  | "diagnosed"
+  | "active"
+  | "completed";
 
 interface MizukagamiD1Row {
   id: string;
@@ -97,8 +101,83 @@ interface MizukagamiD1Row {
   state: MizukagamiState;
   birth_date: string | null;
   sap_session_id: string | null;
+  calculator_summary: string | null;
+  innate_profile: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/** Map calculator key → tradition name */
+const CALCULATOR_TO_TRADITION: Record<string, string> = {
+  eto: "干支",
+  numerology: "数秘術",
+  bazi: "四柱推命",
+  western: "西洋占星術",
+  maya: "マヤ暦",
+  vedic: "ヴェーダ占星術",
+  iching: "易経",
+  kabbalah: "カバラ",
+  sukuyo: "宿曜",
+  sanmei: "算命学",
+  kusei: "九星気学",
+  ziwei: "紫微斗数",
+};
+
+/** Extract a human-readable result label from calculator data */
+function buildCalculatorSummary(
+  calculatorDetails: Record<
+    string,
+    { tradition: string; weight: number; data: Record<string, unknown> }
+  >,
+): Record<string, string> {
+  const summary: Record<string, string> = {};
+  for (const [key, info] of Object.entries(calculatorDetails)) {
+    const tradition = CALCULATOR_TO_TRADITION[key] ?? info.tradition;
+    const d = info.data;
+    switch (key) {
+      case "eto":
+        summary[tradition] = `${d.eto} ${d.element}の${d.polarity}`;
+        break;
+      case "numerology":
+        summary[tradition] = `ライフパス ${d.lifePathNumber}`;
+        break;
+      case "bazi":
+        summary[tradition] = `天干 ${d.stem} / ${d.element}`;
+        break;
+      case "western":
+        summary[tradition] = `太陽 ${d.sunSign}・月 ${d.moonSign}`;
+        break;
+      case "maya": {
+        const seal = d.seal as { name?: string } | undefined;
+        summary[tradition] = `KIN ${d.kin} ${seal?.name ?? ""}`;
+        break;
+      }
+      case "vedic":
+        summary[tradition] = `${d.nakshatra}`;
+        break;
+      case "iching":
+        summary[tradition] = `${d.hexagramName} ${d.symbol ?? ""}`;
+        break;
+      case "kabbalah":
+        summary[tradition] = `${d.sephirotJp}`;
+        break;
+      case "sukuyo":
+        summary[tradition] = `${d.shuku}`;
+        break;
+      case "sanmei":
+        summary[tradition] = `${d.mainStar}`;
+        break;
+      case "kusei":
+        summary[tradition] = `${d.name}`;
+        break;
+      case "ziwei":
+        summary[tradition] = `${d.mingGongStar}`;
+        break;
+      default:
+        summary[tradition] = info.tradition;
+    }
+  }
+  return summary;
 }
 
 // ============================================================
@@ -142,7 +221,7 @@ async function getActiveD1Session(
 ): Promise<MizukagamiD1Row | null> {
   return db
     .prepare(
-      "SELECT * FROM mizukagami_sessions WHERE line_user_id = ? AND state IN ('waiting_birthday', 'active') ORDER BY created_at DESC LIMIT 1",
+      "SELECT * FROM mizukagami_sessions WHERE line_user_id = ? AND state IN ('waiting_birthday', 'diagnosed', 'active') ORDER BY created_at DESC LIMIT 1",
     )
     .bind(lineUserId)
     .first<MizukagamiD1Row>();
@@ -166,6 +245,8 @@ async function createD1Session(
     state: "waiting_birthday",
     birth_date: null,
     sap_session_id: null,
+    calculator_summary: null,
+    innate_profile: null,
     created_at: now,
     updated_at: now,
   };
@@ -175,7 +256,14 @@ async function updateD1Session(
   db: D1Database,
   id: string,
   updates: Partial<
-    Pick<MizukagamiD1Row, "state" | "birth_date" | "sap_session_id">
+    Pick<
+      MizukagamiD1Row,
+      | "state"
+      | "birth_date"
+      | "sap_session_id"
+      | "calculator_summary"
+      | "innate_profile"
+    >
   >,
 ): Promise<void> {
   const sets: string[] = ["updated_at = ?"];
@@ -191,6 +279,14 @@ async function updateD1Session(
   if (updates.sap_session_id) {
     sets.push("sap_session_id = ?");
     vals.push(updates.sap_session_id);
+  }
+  if (updates.calculator_summary) {
+    sets.push("calculator_summary = ?");
+    vals.push(updates.calculator_summary);
+  }
+  if (updates.innate_profile) {
+    sets.push("innate_profile = ?");
+    vals.push(updates.innate_profile);
   }
   vals.push(id);
   await db
@@ -376,6 +472,7 @@ function buildProgressDots(
     dots.push({
       type: "box",
       layout: "vertical",
+      contents: [],
       width: "6px",
       height: "6px",
       cornerRadius: "3px",
@@ -395,32 +492,55 @@ function buildProgressDots(
 function buildDisclosureFlexBubble(
   disclosed: string[],
   newTraditions: string[],
+  calcSummary?: Record<string, string>,
 ): Record<string, unknown> {
-  const tradContents = newTraditions.map((t) => {
+  const tradContents = newTraditions.flatMap((t) => {
     const tc = TRADITION_COLORS[t] ?? { color: "#8e8ea8", label: "" };
-    return {
-      type: "box",
-      layout: "horizontal",
-      margin: "sm",
-      contents: [
-        {
-          type: "box",
-          layout: "vertical",
-          width: "8px",
-          height: "8px",
-          cornerRadius: "4px",
-          backgroundColor: tc.color,
-          offsetTop: "4px",
-        },
-        {
-          type: "text",
-          text: `${t}  ${tc.label}`,
-          size: "xs",
-          color: tc.color,
-          margin: "sm",
-        },
-      ],
-    };
+    const result = calcSummary?.[t];
+    const items: Record<string, unknown>[] = [
+      {
+        type: "box",
+        layout: "horizontal",
+        margin: "sm",
+        contents: [
+          {
+            type: "box",
+            layout: "vertical",
+            contents: [],
+            width: "8px",
+            height: "8px",
+            cornerRadius: "4px",
+            backgroundColor: tc.color,
+            offsetTop: "4px",
+          },
+          {
+            type: "text",
+            text: t,
+            size: "xs",
+            color: tc.color,
+            margin: "sm",
+            weight: "bold",
+          },
+        ],
+      },
+    ];
+    if (result) {
+      items.push({
+        type: "box",
+        layout: "horizontal",
+        contents: [
+          {
+            type: "text",
+            text: result,
+            size: "sm",
+            color: "#e0e0e8",
+          },
+        ],
+        paddingStart: "16px",
+        margin: "xs",
+      });
+    }
+    return items;
   });
   return {
     type: "bubble",
@@ -658,7 +778,7 @@ export async function handleMizukagami(
         return { handled: true };
       }
 
-      // Call diagnosis API
+      // === Diagnosis only (~2s) — save result, reply with summary ===
       let diagResult: DiagnosisApiResponse;
       try {
         diagResult = await callDiagnosisApi(
@@ -672,13 +792,12 @@ export async function handleMizukagami(
         await lineClient.replyMessage(replyToken, [
           {
             type: "text",
-            text: "診断の計算中にエラーが発生しました。\nもう一度生年月日を送ってみてください。",
+            text: "診断の計算中にエラーが発生しました。\n「水鏡」と送ると最初からやり直せます。",
           },
         ]);
         return { handled: true };
       }
 
-      // Build innateProfile from diagnosis response
       const innateProfile = {
         spiralPrimary: diagResult.diagnosis.innate.primary,
         confidence: diagResult.diagnosis.innate.confidence,
@@ -693,8 +812,63 @@ export async function handleMizukagami(
         },
         calculatorDetails: diagResult.calculatorDetails,
       };
+      const calcSummary = buildCalculatorSummary(diagResult.calculatorDetails);
 
-      // Start mirror session
+      // Save diagnosis to D1, state → "diagnosed"
+      await updateD1Session(db, d1Session.id, {
+        state: "diagnosed",
+        birth_date: birthday,
+        innate_profile: JSON.stringify(innateProfile),
+        calculator_summary: JSON.stringify(calcSummary),
+      });
+
+      // Reply with diagnosis summary + invite to start dialogue
+      const allTraditions = Object.entries(calcSummary);
+      const summaryLines = allTraditions
+        .slice(0, 6)
+        .map(([t, v]) => `• ${t}: ${v}`)
+        .join("\n");
+      await lineClient.replyMessage(replyToken, [
+        {
+          type: "text",
+          text: `✧ 12の叡智体系の計算が完了しました。\n\n${summaryLines}\n...他${Math.max(0, allTraditions.length - 6)}体系\n\n水鏡との対話を始めましょう。\n何か一言、お願いします。`,
+        },
+      ]);
+      return { handled: true };
+    }
+
+    // --- Case 2.5: Diagnosed (ready to start mirror session) ---
+    if (d1Session.state === "diagnosed") {
+      if (isMizukagamiTrigger(text)) {
+        await updateD1Session(db, d1Session.id, { state: "completed" });
+        await createD1Session(db, lineUserId);
+        await lineClient.replyMessage(replyToken, [
+          {
+            type: "text",
+            text: "水鏡の水面が静かに揺れています。\n\nあなたの12の叡智を映し出すために、\n生年月日を教えてください。\n\n例: 19810324",
+          },
+        ]);
+        return { handled: true };
+      }
+
+      // User responded — start mirror session (~20s, within 30s limit)
+      if (!d1Session.innate_profile) {
+        await lineClient.replyMessage(replyToken, [
+          {
+            type: "text",
+            text: "セッションデータが見つかりません。\n「水鏡」と送ると最初からやり直せます。",
+          },
+        ]);
+        await updateD1Session(db, d1Session.id, { state: "completed" });
+        return { handled: true };
+      }
+
+      const savedProfile = JSON.parse(d1Session.innate_profile);
+      const savedCalcSummary: Record<string, string> =
+        d1Session.calculator_summary
+          ? JSON.parse(d1Session.calculator_summary)
+          : {};
+
       let sessionResponse: MirrorSessionApiResponse;
       try {
         sessionResponse = await callMirrorSessionApi(
@@ -703,7 +877,7 @@ export async function handleMizukagami(
           {
             action: "start",
             line_user_id: lineUserId,
-            innate_profile: innateProfile,
+            innate_profile: savedProfile,
           },
           vercelBypass,
         );
@@ -712,13 +886,14 @@ export async function handleMizukagami(
         await lineClient.replyMessage(replyToken, [
           {
             type: "text",
-            text: "水鏡のセッション開始に失敗しました。\nしばらくしてからもう一度お試しください。",
+            text: "水鏡のセッション開始に失敗しました。\n「水鏡」と送ると最初からやり直せます。",
           },
         ]);
+        await updateD1Session(db, d1Session.id, { state: "completed" });
         return { handled: true };
       }
 
-      // Send response messages first (replyToken expires quickly)
+      // Send response
       const messages: Array<Record<string, unknown>> = [];
       if (sessionResponse.message) {
         messages.push({ type: "text", text: sessionResponse.message });
@@ -728,28 +903,41 @@ export async function handleMizukagami(
         messages.push({
           type: "flex",
           altText: `${disclosed.join("・")} が開示されました (${disclosed.length}/12)`,
-          contents: buildDisclosureFlexBubble(disclosed, disclosed),
+          contents: buildDisclosureFlexBubble(
+            disclosed,
+            disclosed,
+            savedCalcSummary,
+          ),
         });
       }
       if (messages.length > 0) {
         await lineClient.replyMessage(replyToken, messages.slice(0, 5));
       }
 
-      // Update D1 state (after reply so D1 errors don't block the response)
-      try {
-        await updateD1Session(db, d1Session.id, {
-          state: "active",
-          birth_date: birthday,
-          sap_session_id: sessionResponse.session_id,
-        });
-      } catch (err) {
-        console.error("[mizukagami] D1 state update failed:", err);
-      }
+      await updateD1Session(db, d1Session.id, {
+        state: "active",
+        sap_session_id: sessionResponse.session_id,
+      });
       return { handled: true };
     }
 
     // --- Case 3: Active session — forward to mirror-session API ---
     if (d1Session.state === "active") {
+      // Allow trigger word to reset active session
+      if (isMizukagamiTrigger(text)) {
+        await updateD1Session(db, d1Session.id, { state: "completed" });
+        await createD1Session(db, lineUserId);
+        await lineClient.replyMessage(replyToken, [
+          {
+            type: "text",
+            text: "水鏡の水面が静かに揺れています。\n\nあなたの12の叡智を映し出すために、\n生年月日を教えてください。\n\n例: 19810324",
+          },
+        ]);
+        return { handled: true };
+      }
+      const calcSummary = d1Session.calculator_summary
+        ? (JSON.parse(d1Session.calculator_summary) as Record<string, string>)
+        : undefined;
       return await handleActiveSession(
         db,
         d1Session.id,
@@ -760,6 +948,7 @@ export async function handleMizukagami(
         sapApiUrl,
         sapApiKey,
         vercelBypass,
+        calcSummary,
       );
     }
 
@@ -783,6 +972,7 @@ async function handleActiveSession(
   sapApiUrl: string,
   sapApiKey: string,
   vercelBypass?: string,
+  calcSummary?: Record<string, string>,
 ): Promise<MizukagamiResult> {
   // Get previous state for diff
   const prevStatus = await checkMirrorSessionStatus(
@@ -831,7 +1021,11 @@ async function handleActiveSession(
     messages.push({
       type: "flex",
       altText: `${newTraditions.join("・")} が開示されました (${disclosed.length}/12)`,
-      contents: buildDisclosureFlexBubble(disclosed, newTraditions),
+      contents: buildDisclosureFlexBubble(
+        disclosed,
+        newTraditions,
+        calcSummary,
+      ),
     });
   }
 
