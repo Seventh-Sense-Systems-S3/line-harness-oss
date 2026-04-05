@@ -893,11 +893,8 @@ export async function handleMizukagami(
         return { handled: true };
       }
 
-      // Send response
+      // Send response: card first, then explanation
       const messages: Array<Record<string, unknown>> = [];
-      if (sessionResponse.message) {
-        messages.push({ type: "text", text: sessionResponse.message });
-      }
       const disclosed = sessionResponse.disclosed_traditions ?? [];
       if (disclosed.length > 0) {
         messages.push({
@@ -909,6 +906,9 @@ export async function handleMizukagami(
             savedCalcSummary,
           ),
         });
+      }
+      if (sessionResponse.message) {
+        messages.push({ type: "text", text: sessionResponse.message });
       }
       if (messages.length > 0) {
         await lineClient.replyMessage(replyToken, messages.slice(0, 5));
@@ -1008,13 +1008,10 @@ async function handleActiveSession(
     return { handled: true };
   }
 
+  // Card first, then explanation text
   const messages: Array<Record<string, unknown>> = [];
 
-  if (apiResponse.message) {
-    messages.push({ type: "text", text: apiResponse.message });
-  }
-
-  // Tradition disclosure Flex
+  // Tradition disclosure Flex (card first)
   const disclosed = apiResponse.disclosed_traditions ?? [];
   const newTraditions = disclosed.filter((t) => !previousDisclosed.includes(t));
   if (newTraditions.length > 0 && !apiResponse.card) {
@@ -1027,6 +1024,10 @@ async function handleActiveSession(
         calcSummary,
       ),
     });
+  }
+
+  if (apiResponse.message) {
+    messages.push({ type: "text", text: apiResponse.message });
   }
 
   // Final card
