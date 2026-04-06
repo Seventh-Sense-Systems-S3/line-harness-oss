@@ -863,15 +863,13 @@ export async function handleMizukagami(
         return { handled: true };
       }
 
-      // Show typing dots while mirror-session processes (~20s)
-      fetch("https://api.line.me/v2/bot/chat/loading", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${(lineClient as unknown as { channelAccessToken: string }).channelAccessToken}`,
+      // Reply immediately with loading text, results via pushMessage
+      await lineClient.replyMessage(replyToken, [
+        {
+          type: "text",
+          text: "✧ 水面が光を読み解いています...",
         },
-        body: JSON.stringify({ chatId: lineUserId, loadingSeconds: 30 }),
-      }).catch(() => {});
+      ]);
 
       const savedProfile = JSON.parse(d1Session.innate_profile);
       const savedCalcSummary: Record<string, string> =
@@ -893,7 +891,7 @@ export async function handleMizukagami(
         );
       } catch (err) {
         console.error("[mizukagami] Mirror session start failed:", err);
-        await lineClient.replyMessage(replyToken, [
+        await lineClient.pushMessage(lineUserId, [
           {
             type: "text",
             text: "水鏡のセッション開始に失敗しました。\n「水鏡」と送ると最初からやり直せます。",
@@ -903,7 +901,7 @@ export async function handleMizukagami(
         return { handled: true };
       }
 
-      // Send response: card first, then explanation
+      // Send response via pushMessage (replyToken already used for loading text)
       const messages: Array<Record<string, unknown>> = [];
       const disclosed = sessionResponse.disclosed_traditions ?? [];
       if (disclosed.length > 0) {
@@ -921,7 +919,7 @@ export async function handleMizukagami(
         messages.push({ type: "text", text: sessionResponse.message });
       }
       if (messages.length > 0) {
-        await lineClient.replyMessage(replyToken, messages.slice(0, 5));
+        await lineClient.pushMessage(lineUserId, messages.slice(0, 5));
       }
 
       await updateD1Session(db, d1Session.id, {
@@ -984,15 +982,13 @@ async function handleActiveSession(
   vercelBypass?: string,
   calcSummary?: Record<string, string>,
 ): Promise<MizukagamiResult> {
-  // Show typing dots while processing (~17s)
-  fetch("https://api.line.me/v2/bot/chat/loading", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${(lineClient as unknown as { channelAccessToken: string }).channelAccessToken}`,
+  // Reply immediately with loading text, results via pushMessage
+  await lineClient.replyMessage(replyToken, [
+    {
+      type: "text",
+      text: "✧ 水面が揺れています...",
     },
-    body: JSON.stringify({ chatId: lineUserId, loadingSeconds: 30 }),
-  }).catch(() => {});
+  ]);
 
   let apiResponse: MirrorSessionApiResponse;
   try {
@@ -1008,9 +1004,8 @@ async function handleActiveSession(
     );
   } catch (err) {
     console.error("[mizukagami] Active session API error:", err);
-    // Mark D1 session as completed to prevent loop
     await updateD1Session(db, d1SessionId, { state: "completed" });
-    await lineClient.replyMessage(replyToken, [
+    await lineClient.pushMessage(lineUserId, [
       {
         type: "text",
         text: "水鏡のセッションでエラーが発生しました。\n「水鏡」と送ると最初からやり直せます。",
@@ -1094,7 +1089,7 @@ async function handleActiveSession(
   }
 
   if (messages.length > 0) {
-    await lineClient.replyMessage(replyToken, messages.slice(0, 5));
+    await lineClient.pushMessage(lineUserId, messages.slice(0, 5));
   }
 
   return { handled: true };
