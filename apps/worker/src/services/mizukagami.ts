@@ -902,24 +902,24 @@ export async function handleMizukagami(
       }
 
       // Send response via pushMessage (replyToken already used for loading text)
-      const messages: Array<Record<string, unknown>> = [];
       const disclosed = sessionResponse.disclosed_traditions ?? [];
       if (disclosed.length > 0) {
-        messages.push({
-          type: "flex",
-          altText: `${disclosed.join("・")} が開示されました (${disclosed.length}/12)`,
-          contents: buildDisclosureFlexBubble(
-            disclosed,
-            disclosed,
-            savedCalcSummary,
-          ),
-        });
+        await lineClient.pushMessage(lineUserId, [
+          {
+            type: "flex",
+            altText: `${disclosed.join("・")} が開示されました (${disclosed.length}/12)`,
+            contents: buildDisclosureFlexBubble(
+              disclosed,
+              disclosed,
+              savedCalcSummary,
+            ),
+          },
+        ]);
       }
       if (sessionResponse.message) {
-        messages.push({ type: "text", text: sessionResponse.message });
-      }
-      if (messages.length > 0) {
-        await lineClient.pushMessage(lineUserId, messages.slice(0, 5));
+        await lineClient.pushMessage(lineUserId, [
+          { type: "text", text: sessionResponse.message },
+        ]);
       }
 
       await updateD1Session(db, d1Session.id, {
@@ -1014,82 +1014,81 @@ async function handleActiveSession(
     return { handled: true };
   }
 
-  // Card first, then explanation text
-  const messages: Array<Record<string, unknown>> = [];
-
-  // Tradition disclosure Flex (card first)
+  // Send each message separately via pushMessage to avoid partial delivery
   const disclosed = apiResponse.disclosed_traditions ?? [];
   if (disclosed.length > 0 && !apiResponse.card) {
-    messages.push({
-      type: "flex",
-      altText: `${disclosed.length}/12 叡智体系`,
-      contents: buildDisclosureFlexBubble(disclosed, disclosed, calcSummary),
-    });
+    await lineClient.pushMessage(lineUserId, [
+      {
+        type: "flex",
+        altText: `${disclosed.length}/12 叡智体系`,
+        contents: buildDisclosureFlexBubble(disclosed, disclosed, calcSummary),
+      },
+    ]);
   }
 
   if (apiResponse.message) {
-    messages.push({ type: "text", text: apiResponse.message });
+    await lineClient.pushMessage(lineUserId, [
+      { type: "text", text: apiResponse.message },
+    ]);
   }
 
-  // Final card
   if (apiResponse.card) {
-    messages.push({
-      type: "flex",
-      altText: "水鏡カード — あなたの12叡智の統合",
-      contents: buildFinalCardFlexBubble(apiResponse.card),
-    });
+    await lineClient.pushMessage(lineUserId, [
+      {
+        type: "flex",
+        altText: "水鏡カード — あなたの12叡智の統合",
+        contents: buildFinalCardFlexBubble(apiResponse.card),
+      },
+    ]);
   }
 
-  // Session completed
   if (apiResponse.sessionCompleted) {
     await updateD1Session(db, d1SessionId, { state: "completed" });
     if (apiResponse.session_id) {
       const reportUrl = `${sapApiUrl}/mizukagami/report/${apiResponse.session_id}`;
-      messages.push({
-        type: "flex",
-        altText: "振り返りレポートを見る",
-        contents: {
-          type: "bubble",
-          body: {
-            type: "box",
-            layout: "vertical",
-            backgroundColor: "#07070d",
-            paddingAll: "20px",
-            contents: [
-              {
-                type: "text",
-                text: "あなたの水面の全貌を見る",
-                size: "sm",
-                color: "#e0e0e8",
-                align: "center",
-              },
-            ],
-          },
-          footer: {
-            type: "box",
-            layout: "vertical",
-            backgroundColor: "#07070d",
-            paddingAll: "12px",
-            contents: [
-              {
-                type: "button",
-                action: {
-                  type: "uri",
-                  label: "振り返りレポート →",
-                  uri: reportUrl,
+      await lineClient.pushMessage(lineUserId, [
+        {
+          type: "flex",
+          altText: "振り返りレポートを見る",
+          contents: {
+            type: "bubble",
+            body: {
+              type: "box",
+              layout: "vertical",
+              backgroundColor: "#07070d",
+              paddingAll: "20px",
+              contents: [
+                {
+                  type: "text",
+                  text: "あなたの水面の全貌を見る",
+                  size: "sm",
+                  color: "#e0e0e8",
+                  align: "center",
                 },
-                style: "primary",
-                color: "#7EB8D8",
-              },
-            ],
+              ],
+            },
+            footer: {
+              type: "box",
+              layout: "vertical",
+              backgroundColor: "#07070d",
+              paddingAll: "12px",
+              contents: [
+                {
+                  type: "button",
+                  action: {
+                    type: "uri",
+                    label: "振り返りレポート →",
+                    uri: reportUrl,
+                  },
+                  style: "primary",
+                  color: "#7EB8D8",
+                },
+              ],
+            },
           },
         },
-      });
+      ]);
     }
-  }
-
-  if (messages.length > 0) {
-    await lineClient.pushMessage(lineUserId, messages.slice(0, 5));
   }
 
   return { handled: true };
