@@ -890,8 +890,15 @@ export async function handleMizukagami(
         return { handled: true };
       }
 
-      // Show loading animation
-      await lineClient.showLoadingAnimation(lineUserId, 30);
+      // Show loading animation via raw fetch (SDK dist stale, bypass with direct API call)
+      await fetch("https://api.line.me/v2/bot/chat/loading/start", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${(lineClient as unknown as { channelAccessToken: string }).channelAccessToken}`,
+        },
+        body: JSON.stringify({ chatId: lineUserId, loadingSeconds: 30 }),
+      }).catch(() => {});
 
       // Enqueue for background processing (15-min budget)
       if (queue) {
@@ -1032,8 +1039,15 @@ async function handleActiveSession(
   calcSummary?: Record<string, string>,
   queue?: Queue,
 ): Promise<MizukagamiResult> {
-  // Show loading animation
-  await lineClient.showLoadingAnimation(lineUserId, 30);
+  // Show loading animation via raw fetch
+  await fetch("https://api.line.me/v2/bot/chat/loading/start", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${(lineClient as unknown as { channelAccessToken: string }).channelAccessToken}`,
+    },
+    body: JSON.stringify({ chatId: lineUserId, loadingSeconds: 30 }),
+  }).catch(() => {});
 
   // Enqueue for background processing (15-min budget)
   if (queue) {
