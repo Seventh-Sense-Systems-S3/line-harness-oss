@@ -16,6 +16,7 @@ import { LineClient } from "@line-crm/line-sdk";
 interface MirrorSessionApiResponse {
   session_id: string;
   current_step: string;
+  next_step?: string;
   message: string;
   disclosed_traditions?: string[];
   remaining_traditions?: string[];
@@ -56,6 +57,10 @@ interface WaterMirrorCardV2 {
       label: string;
     }>;
   };
+  /** 216魂マッチング結果（SAP APIが自動注入） */
+  soul_name?: string;
+  soul_no?: number;
+  soul_name_reading?: string;
 }
 
 interface MirrorSessionStatusResponse {
@@ -282,6 +287,20 @@ function buildFinalCardFlexBubble(
             { type: "filler" },
           ],
         },
+        // Soul name (216魂マッチング結果)
+        ...(card.soul_name
+          ? [
+              {
+                type: "text",
+                text: `「${card.soul_name}」の魂`,
+                size: "md",
+                color: "#D4B06A",
+                weight: "bold",
+                align: "center",
+                margin: "md",
+              },
+            ]
+          : []),
         // User essence
         {
           type: "text",
@@ -422,10 +441,25 @@ export async function handleMizukagami(
       });
     }
 
+    // 2c. q6→card 自動遷移: next_step が "card" なら、ユーザー入力を待たずにカード生成を実行
+    let cardResponse: MirrorSessionApiResponse | null = null;
+    if (apiResponse.next_step === "card" && !apiResponse.card) {
+      try {
+        cardResponse = await callMirrorSessionApi(sapApiUrl, sapApiKey, {
+          action: "message",
+          line_user_id: lineUserId,
+          text: "水鏡カードを紡いでください",
+        });
+      } catch (err) {
+        console.error("[mizukagami] Auto card generation error:", err);
+        // q6メッセージだけ送信してフォールバック
+      }
+    }
+
     // 3. Build LINE messages
     const messages: Array<Record<string, unknown>> = [];
 
-    // Text message
+    // Text message (q6 response)
     if (apiResponse.message) {
       messages.push({ type: "text", text: apiResponse.message });
     }
@@ -450,9 +484,15 @@ export async function handleMizukagami(
       });
     }
 
-    // Final card Flex Message
-    if (apiResponse.card) {
-      const cardBubble = buildFinalCardFlexBubble(apiResponse.card);
+    // Card message from auto-transition (q6→card)
+    if (cardResponse?.message) {
+      messages.push({ type: "text", text: cardResponse.message });
+    }
+
+    // Final card Flex Message (from original response or auto-transition)
+    const finalCard = cardResponse?.card ?? apiResponse.card;
+    if (finalCard) {
+      const cardBubble = buildFinalCardFlexBubble(finalCard);
       messages.push({
         type: "flex",
         altText: "水鏡カード — あなたの12叡智の統合",
@@ -461,8 +501,11 @@ export async function handleMizukagami(
     }
 
     // Session completed — add report link
-    if (apiResponse.sessionCompleted && apiResponse.session_id) {
-      const reportUrl = `${sapApiUrl}/mizukagami/report/${apiResponse.session_id}`;
+    const isCompleted =
+      cardResponse?.sessionCompleted ?? apiResponse.sessionCompleted;
+    const sessionId = cardResponse?.session_id ?? apiResponse.session_id;
+    if (isCompleted && sessionId) {
+      const reportUrl = `${sapApiUrl}/mizukagami/report/${sessionId}`;
       messages.push({
         type: "flex",
         altText: "振り返りレポートを見る",
