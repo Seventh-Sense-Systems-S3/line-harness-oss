@@ -863,6 +863,16 @@ export async function handleMizukagami(
         return { handled: true };
       }
 
+      // Show typing dots while mirror-session processes (~20s)
+      fetch("https://api.line.me/v2/bot/chat/loading", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${(lineClient as unknown as { channelAccessToken: string }).channelAccessToken}`,
+        },
+        body: JSON.stringify({ chatId: lineUserId, loadingSeconds: 30 }),
+      }).catch(() => {});
+
       const savedProfile = JSON.parse(d1Session.innate_profile);
       const savedCalcSummary: Record<string, string> =
         d1Session.calculator_summary
@@ -974,6 +984,16 @@ async function handleActiveSession(
   vercelBypass?: string,
   calcSummary?: Record<string, string>,
 ): Promise<MizukagamiResult> {
+  // Show typing dots while processing (~17s)
+  fetch("https://api.line.me/v2/bot/chat/loading", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${(lineClient as unknown as { channelAccessToken: string }).channelAccessToken}`,
+    },
+    body: JSON.stringify({ chatId: lineUserId, loadingSeconds: 30 }),
+  }).catch(() => {});
+
   let apiResponse: MirrorSessionApiResponse;
   try {
     apiResponse = await callMirrorSessionApi(
