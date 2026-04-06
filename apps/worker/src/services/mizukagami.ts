@@ -974,15 +974,6 @@ async function handleActiveSession(
   vercelBypass?: string,
   calcSummary?: Record<string, string>,
 ): Promise<MizukagamiResult> {
-  // Get previous state for diff
-  const prevStatus = await checkMirrorSessionStatus(
-    sapApiUrl,
-    sapApiKey,
-    lineUserId,
-    vercelBypass,
-  );
-  const previousDisclosed = prevStatus.session?.disclosed_traditions ?? [];
-
   let apiResponse: MirrorSessionApiResponse;
   try {
     apiResponse = await callMirrorSessionApi(
@@ -1013,16 +1004,11 @@ async function handleActiveSession(
 
   // Tradition disclosure Flex (card first)
   const disclosed = apiResponse.disclosed_traditions ?? [];
-  const newTraditions = disclosed.filter((t) => !previousDisclosed.includes(t));
-  if (newTraditions.length > 0 && !apiResponse.card) {
+  if (disclosed.length > 0 && !apiResponse.card) {
     messages.push({
       type: "flex",
-      altText: `${newTraditions.join("・")} が開示されました (${disclosed.length}/12)`,
-      contents: buildDisclosureFlexBubble(
-        disclosed,
-        newTraditions,
-        calcSummary,
-      ),
+      altText: `${disclosed.length}/12 叡智体系`,
+      contents: buildDisclosureFlexBubble(disclosed, disclosed, calcSummary),
     });
   }
 
