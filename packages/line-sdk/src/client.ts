@@ -70,7 +70,7 @@ export class LineClient {
     chatId: string,
     loadingSeconds: number = 20,
   ): Promise<void> {
-    await this.request("/chat/loading", {
+    await this.request("/chat/loading/start", {
       chatId,
       loadingSeconds: Math.min(60, Math.max(5, loadingSeconds)),
     });

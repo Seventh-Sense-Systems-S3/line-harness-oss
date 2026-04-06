@@ -252,7 +252,7 @@ async function createD1Session(
   };
 }
 
-async function updateD1Session(
+export async function updateD1Session(
   db: D1Database,
   id: string,
   updates: Partial<
@@ -399,7 +399,7 @@ async function callDiagnosisApi(
   return (await res.json()) as DiagnosisApiResponse;
 }
 
-async function callMirrorSessionApi(
+export async function callMirrorSessionApi(
   sapApiUrl: string,
   sapApiKey: string,
   body: Record<string, unknown>,
@@ -444,7 +444,10 @@ async function checkMirrorSessionStatus(
 // Tradition colors
 // ============================================================
 
-const TRADITION_COLORS: Record<string, { color: string; label: string }> = {
+export const TRADITION_COLORS: Record<
+  string,
+  { color: string; label: string }
+> = {
   干支: { color: "#C4A882", label: "Chinese Zodiac" },
   数秘術: { color: "#B08CD8", label: "Numerology" },
   四柱推命: { color: "#C4A882", label: "BaZi" },
@@ -463,7 +466,7 @@ const TRADITION_COLORS: Record<string, { color: string; label: string }> = {
 // Flex Message builders
 // ============================================================
 
-function buildProgressDots(
+export function buildProgressDots(
   disclosed: string[],
   total: number = 12,
 ): Record<string, unknown> {
@@ -489,7 +492,7 @@ function buildProgressDots(
   };
 }
 
-function buildDisclosureFlexBubble(
+export function buildDisclosureFlexBubble(
   disclosed: string[],
   newTraditions: string[],
   calcSummary?: Record<string, string>,
@@ -567,7 +570,7 @@ function buildDisclosureFlexBubble(
   };
 }
 
-function buildFinalCardFlexBubble(
+export function buildFinalCardFlexBubble(
   card: WaterMirrorCardV2,
 ): Record<string, unknown> {
   const actionItems = [
@@ -691,6 +694,20 @@ export interface MizukagamiResult {
   error?: string;
 }
 
+export interface MizukagamiQueueMessage {
+  type: "session_start" | "session_message";
+  sessionId: string;
+  lineUserId: string;
+  lineAccessToken: string;
+  sapApiUrl: string;
+  sapApiKey: string;
+  vercelBypass?: string;
+  innateProfile?: string;
+  calcSummary?: string;
+  text?: string;
+  d1SessionId?: string;
+}
+
 export async function handleMizukagami(
   db: D1Database,
   lineClient: LineClient,
@@ -700,6 +717,7 @@ export async function handleMizukagami(
   sapApiUrl: string,
   sapApiKey: string,
   vercelBypass?: string,
+  queue?: Queue,
 ): Promise<MizukagamiResult> {
   try {
     await ensureMizukagamiTable(db);
@@ -734,6 +752,8 @@ export async function handleMizukagami(
           sapApiUrl,
           sapApiKey,
           vercelBypass,
+          undefined,
+          queue,
         );
       }
 
@@ -841,6 +861,13 @@ export async function handleMizukagami(
     if (d1Session.state === "diagnosed") {
       if (isMizukagamiTrigger(text)) {
         await updateD1Session(db, d1Session.id, { state: "completed" });
+        // Cleanup SAP session (fire-and-forget)
+        callMirrorSessionApi(
+          sapApiUrl,
+          sapApiKey,
+          { action: "complete", line_user_id: lineUserId },
+          vercelBypass,
+        ).catch(() => {});
         await createD1Session(db, lineUserId);
         await lineClient.replyMessage(replyToken, [
           {
@@ -851,7 +878,7 @@ export async function handleMizukagami(
         return { handled: true };
       }
 
-      // User responded — start mirror session (~20s, within 30s limit)
+      // User responded — start mirror session
       if (!d1Session.innate_profile) {
         await lineClient.replyMessage(replyToken, [
           {
@@ -863,14 +890,28 @@ export async function handleMizukagami(
         return { handled: true };
       }
 
-      // Reply immediately with loading text, results via pushMessage
-      await lineClient.replyMessage(replyToken, [
-        {
-          type: "text",
-          text: "✧ 水面が光を読み解いています...",
-        },
-      ]);
+      // Show loading animation
+      await lineClient.showLoadingAnimation(lineUserId, 30);
 
+      // Enqueue for background processing (15-min budget)
+      if (queue) {
+        await queue.send({
+          type: "session_start",
+          sessionId: d1Session.id,
+          lineUserId,
+          lineAccessToken: (
+            lineClient as unknown as { channelAccessToken: string }
+          ).channelAccessToken,
+          sapApiUrl,
+          sapApiKey,
+          vercelBypass,
+          innateProfile: d1Session.innate_profile,
+          calcSummary: d1Session.calculator_summary,
+        } satisfies MizukagamiQueueMessage);
+        return { handled: true };
+      }
+
+      // Fallback: direct call (if queue not available)
       const savedProfile = JSON.parse(d1Session.innate_profile);
       const savedCalcSummary: Record<string, string> =
         d1Session.calculator_summary
@@ -934,6 +975,13 @@ export async function handleMizukagami(
       // Allow trigger word to reset active session
       if (isMizukagamiTrigger(text)) {
         await updateD1Session(db, d1Session.id, { state: "completed" });
+        // Cleanup SAP session (fire-and-forget)
+        callMirrorSessionApi(
+          sapApiUrl,
+          sapApiKey,
+          { action: "complete", line_user_id: lineUserId },
+          vercelBypass,
+        ).catch(() => {});
         await createD1Session(db, lineUserId);
         await lineClient.replyMessage(replyToken, [
           {
@@ -957,6 +1005,7 @@ export async function handleMizukagami(
         sapApiKey,
         vercelBypass,
         calcSummary,
+        queue,
       );
     }
 
@@ -981,15 +1030,30 @@ async function handleActiveSession(
   sapApiKey: string,
   vercelBypass?: string,
   calcSummary?: Record<string, string>,
+  queue?: Queue,
 ): Promise<MizukagamiResult> {
-  // Reply immediately with loading text, results via pushMessage
-  await lineClient.replyMessage(replyToken, [
-    {
-      type: "text",
-      text: "✧ 水面が揺れています...",
-    },
-  ]);
+  // Show loading animation
+  await lineClient.showLoadingAnimation(lineUserId, 30);
 
+  // Enqueue for background processing (15-min budget)
+  if (queue) {
+    await queue.send({
+      type: "session_message",
+      sessionId: d1SessionId,
+      lineUserId,
+      lineAccessToken: (lineClient as unknown as { channelAccessToken: string })
+        .channelAccessToken,
+      sapApiUrl,
+      sapApiKey,
+      vercelBypass,
+      text,
+      d1SessionId,
+      calcSummary: calcSummary ? JSON.stringify(calcSummary) : undefined,
+    } satisfies MizukagamiQueueMessage);
+    return { handled: true };
+  }
+
+  // Fallback: direct call (if queue not available)
   let apiResponse: MirrorSessionApiResponse;
   try {
     apiResponse = await callMirrorSessionApi(

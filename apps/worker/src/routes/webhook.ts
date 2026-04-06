@@ -88,6 +88,7 @@ webhook.post("/webhook", async (c) => {
           c.env.SAP_API_URL,
           c.env.SAP_API_KEY,
           c.env.VERCEL_PROTECTION_BYPASS,
+          c.env.MIZUKAGAMI_QUEUE,
         );
       } catch (err) {
         console.error("Error handling webhook event:", err);
@@ -110,6 +111,7 @@ async function handleEvent(
   sapApiUrl?: string,
   sapApiKey?: string,
   vercelBypass?: string,
+  mizukagamiQueue?: Queue,
 ): Promise<void> {
   if (event.type === "follow") {
     const userId =
@@ -310,6 +312,7 @@ async function handleEvent(
         sapApiUrl,
         sapApiKey,
         vercelBypass,
+        mizukagamiQueue,
       );
       if (mizuResult.handled) {
         // 水鏡セッションで処理済み — 他のハンドラーをスキップ

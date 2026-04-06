@@ -32,6 +32,7 @@ import { automations } from "./routes/automations.js";
 import { richMenus } from "./routes/rich-menus.js";
 import { trackedLinks } from "./routes/tracked-links.js";
 import { forms } from "./routes/forms.js";
+import { handleMizukagamiQueue } from "./queue-consumer.js";
 
 export type Env = {
   Bindings: {
@@ -47,6 +48,7 @@ export type Env = {
     SAP_API_URL: string;
     SAP_API_KEY: string;
     VERCEL_PROTECTION_BYPASS: string;
+    MIZUKAGAMI_QUEUE: Queue;
   };
 };
 
@@ -161,4 +163,5 @@ async function scheduled(
 export default {
   fetch: app.fetch,
   scheduled,
+  queue: handleMizukagamiQueue,
 };
