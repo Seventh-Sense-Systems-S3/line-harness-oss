@@ -23,8 +23,12 @@ export async function handleMizukagamiQueue(
 ): Promise<void> {
   await ensureMizukagamiTable(env.DB);
 
+  console.log(`[queue] Received batch of ${batch.messages.length} messages`);
   for (const msg of batch.messages) {
     const data = msg.body;
+    console.log(
+      `[queue] Processing: type=${data.type}, session=${data.sessionId}`,
+    );
     try {
       if (data.type === "session_start") {
         await handleSessionStart(env.DB, data);

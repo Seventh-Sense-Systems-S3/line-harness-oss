@@ -890,6 +890,7 @@ export async function handleMizukagami(
         return { handled: true };
       }
 
+      console.log("[mizukagami] diagnosed state: showing loading + enqueue");
       // Show loading animation via raw fetch (SDK dist stale, bypass with direct API call)
       await fetch("https://api.line.me/v2/bot/chat/loading/start", {
         method: "POST",
@@ -901,7 +902,9 @@ export async function handleMizukagami(
       }).catch(() => {});
 
       // Enqueue for background processing (15-min budget)
+      console.log(`[mizukagami] queue available: ${!!queue}`);
       if (queue) {
+        console.log("[mizukagami] sending to queue...");
         await queue.send({
           type: "session_start",
           sessionId: d1Session.id,
