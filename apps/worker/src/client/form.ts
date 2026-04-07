@@ -58,6 +58,13 @@ interface FormState {
   friendId: string | null;
   submitting: boolean;
   verifiedXUsername: string;
+  /**
+   * Tracked link id that brought the user to this form (`?ref=` query param,
+   * propagated from /r/:ref → LIFF). When present, the server uses the
+   * tracked link's reward_template_id (per-campaign reward) instead of the
+   * friend's first-touch attribution.
+   */
+  refTrackedLinkId: string | null;
 }
 
 const state: FormState = {
@@ -67,6 +74,7 @@ const state: FormState = {
   friendId: null,
   submitting: false,
   verifiedXUsername: '',
+  refTrackedLinkId: null,
 };
 
 function escapeHtml(str: string): string {
@@ -633,6 +641,7 @@ async function submitForm(): Promise<void> {
       // Fall through to submit below, then show webhook success
       const webhookBody: Record<string, unknown> = { data: { ...data }, _skipWebhook: true };
       if (state.profile?.userId) webhookBody.lineUserId = state.profile.userId;
+      if (state.refTrackedLinkId) webhookBody.trackedLinkId = state.refTrackedLinkId;
 
       const webhookSubmitRes = await apiCall(`/api/forms/${state.formDef.id}/submit`, {
         method: 'POST',
@@ -655,6 +664,7 @@ async function submitForm(): Promise<void> {
 
     const body: Record<string, unknown> = { data };
     if (state.profile?.userId) body.lineUserId = state.profile.userId;
+    if (state.refTrackedLinkId) body.trackedLinkId = state.refTrackedLinkId;
     // Note: state.friendId is users.id (UUID), not friends.id — don't send as friendId
     console.log('Submitting to:', `/api/forms/${state.formDef.id}/submit`);
 
@@ -1061,6 +1071,12 @@ export async function initForm(formId: string | null): Promise<void> {
       if (baseUrlMatch) {
         state.xHarnessBaseUrl = baseUrlMatch[1];
       }
+    }
+
+    // Capture tracked link ref so submit can attribute reward to this campaign
+    const refParam = urlParams.get('ref');
+    if (refParam) {
+      state.refTrackedLinkId = refParam;
     }
 
     render();

@@ -212,6 +212,7 @@ forms.post('/api/forms/:id/submit', async (c) => {
       friendId?: string;
       data?: Record<string, unknown>;
       _skipWebhook?: boolean;
+      trackedLinkId?: string;
     }>();
 
     const submissionData = body.data ?? {};
@@ -295,23 +296,33 @@ forms.post('/api/forms/:id/submit', async (c) => {
       const db = c.env.DB;
       const now = jstNow();
 
-      // Resolve reward template from the friend's pinned first_tracked_link_id.
-      // This column is set ONCE on first friend-add (or first form-link push for
-      // an already-friend) and never overwritten — so an attacker who is already
-      // a friend cannot swap the campaign id in the form URL to claim another
-      // campaign's reward.
-      // This OVERRIDES form.on_submit_message_* — letting one form be reused
-      // across multiple campaigns with different rewards.
+      // Resolve reward template per-campaign.
+      //
+      // Priority:
+      //   1. body.trackedLinkId (= ?ref= from /r/:ref → LIFF → form). This lets
+      //      X Harness campaign settings drive the reward, even for friends who
+      //      were originally added via a different campaign.
+      //   2. Fallback to friends.first_tracked_link_id (first-touch attribution)
+      //      so existing tracked links without ref pass-through still work.
+      //
+      // This OVERRIDES form.on_submit_message_*.
+      //
+      // Note: anti-replay (preventing the same friend from claiming the same
+      // reward twice via URL tampering) is intentionally NOT enforced. The
+      // product is opt-in oriented and the engagement gate handles real
+      // anti-fraud upstream.
       let rewardTemplate: import('@line-crm/db').MessageTemplate | null = null;
       {
         const { getFriendById, getTrackedLinkById, getMessageTemplateById } = await import('@line-crm/db');
-        const friendRow = await getFriendById(db, friendId);
-        if (friendRow?.first_tracked_link_id) {
-          const trackedLink = await getTrackedLinkById(db, friendRow.first_tracked_link_id);
-          if (trackedLink?.reward_template_id) {
-            rewardTemplate = await getMessageTemplateById(db, trackedLink.reward_template_id);
-          }
-        }
+        const { resolveRewardTemplate } = await import('../services/reward-resolver.js');
+        rewardTemplate = await resolveRewardTemplate(
+          db,
+          {
+            friendId,
+            requestedTrackedLinkId: body.trackedLinkId ?? null,
+          },
+          { getFriendById, getTrackedLinkById, getMessageTemplateById },
+        );
       }
 
       const sideEffects: Promise<unknown>[] = [];
