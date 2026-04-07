@@ -584,6 +584,43 @@ export function buildDisclosureFlexBubble(
   };
 }
 
+/**
+ * ブリッジメッセージ生成（LLM不要、決定論的）
+ * q6応答とカード到着の間に送る演出メッセージ。
+ * innateProfileとcalcSummaryから即座に生成。
+ */
+export function buildBridgeMessages(
+  innateProfile: {
+    soulMatch?: { soulName?: string; soulNo?: number };
+    spiralPrimary?: string;
+  } | null,
+  calcSummary?: Record<string, string>,
+): Array<Record<string, unknown>> {
+  const messages: Array<Record<string, unknown>> = [];
+
+  // Bridge 1: 12叡智の収束演出
+  messages.push({
+    type: "text",
+    text: "12の叡智があなたの水面に映し出されました。\nすべてが一つの方向に収束しています...",
+  });
+
+  // Bridge 2: 216魂マッチング演出（soulMatchがある場合のみ）
+  const soulName = innateProfile?.soulMatch?.soulName;
+  if (soulName) {
+    messages.push({
+      type: "text",
+      text: `216のアーキタイプから、あなたの魂を照合しています...\n「${soulName}」の共鳴を感じます。`,
+    });
+  } else {
+    messages.push({
+      type: "text",
+      text: "あなたの水面に映る叡智を、一枚のカードに紡いでいます...",
+    });
+  }
+
+  return messages;
+}
+
 export function buildFinalCardFlexBubble(
   card: WaterMirrorCardV2,
 ): Record<string, unknown> {
@@ -659,15 +696,29 @@ export function buildFinalCardFlexBubble(
           color: "#5e5e7e",
           margin: "lg",
         },
-        {
-          type: "box",
-          layout: "horizontal",
-          contents:
-            userWordBubbles.length > 0 ? userWordBubbles : [{ type: "filler" }],
-          wrap: true,
-          spacing: "4px",
-          margin: "sm",
-        },
+        // User words: split into rows of 3 to avoid needing wrap on box
+        ...(userWordBubbles.length > 0
+          ? [
+              {
+                type: "box",
+                layout: "horizontal",
+                contents: userWordBubbles.slice(0, 3),
+                spacing: "4px",
+                margin: "sm",
+              },
+              ...(userWordBubbles.length > 3
+                ? [
+                    {
+                      type: "box",
+                      layout: "horizontal",
+                      contents: userWordBubbles.slice(3),
+                      spacing: "4px",
+                      margin: "xs",
+                    },
+                  ]
+                : []),
+            ]
+          : []),
         { type: "separator", margin: "lg", color: "#1a1a2e" },
         {
           type: "text",
