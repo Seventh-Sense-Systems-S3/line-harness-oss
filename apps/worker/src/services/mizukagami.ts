@@ -659,15 +659,29 @@ export function buildFinalCardFlexBubble(
           color: "#5e5e7e",
           margin: "lg",
         },
-        {
-          type: "box",
-          layout: "horizontal",
-          contents:
-            userWordBubbles.length > 0 ? userWordBubbles : [{ type: "filler" }],
-          wrap: true,
-          spacing: "4px",
-          margin: "sm",
-        },
+        // User words: split into rows of 3 to avoid needing wrap on box
+        ...(userWordBubbles.length > 0
+          ? [
+              {
+                type: "box",
+                layout: "horizontal",
+                contents: userWordBubbles.slice(0, 3),
+                spacing: "4px",
+                margin: "sm",
+              },
+              ...(userWordBubbles.length > 3
+                ? [
+                    {
+                      type: "box",
+                      layout: "horizontal",
+                      contents: userWordBubbles.slice(3),
+                      spacing: "4px",
+                      margin: "xs",
+                    },
+                  ]
+                : []),
+            ]
+          : []),
         { type: "separator", margin: "lg", color: "#1a1a2e" },
         {
           type: "text",
