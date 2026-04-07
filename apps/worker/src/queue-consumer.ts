@@ -42,9 +42,10 @@ export async function handleMizukagamiQueue(
       }
       msg.ack();
     } catch (err) {
-      console.error(`[queue] Error processing ${data.type}:`, err);
-      // Retry transient errors (up to default retry limit), ack permanent failures
       const message = err instanceof Error ? err.message : String(err);
+      console.error(`[queue] Error processing ${data.type}:`, message);
+      console.error("[queue] Full error:", err);
+      // Retry transient errors (up to default retry limit), ack permanent failures
       const isPermanent =
         message.includes("400") ||
         message.includes("404") ||
@@ -256,6 +257,31 @@ async function handleSessionMessage(
   }
 
   if (messages.length > 0) {
-    await lineClient.pushMessage(data.lineUserId, messages.slice(0, 5));
+    try {
+      await lineClient.pushMessage(data.lineUserId, messages.slice(0, 5));
+    } catch (pushErr) {
+      console.error(
+        "[queue] pushMessage failed, attempting text-only fallback:",
+        pushErr,
+      );
+      console.error(
+        "[queue] Failed messages JSON:",
+        JSON.stringify(messages).slice(0, 2000),
+      );
+      // Fallback: send text-only messages (strip flex)
+      const textOnly = messages.filter((m) => m.type === "text").slice(0, 4);
+      // Add report link as plain text if session completed
+      const finalCard = cardResponse?.card ?? apiResponse.card;
+      const sessionId = cardResponse?.session_id ?? apiResponse.session_id;
+      if (finalCard && sessionId) {
+        textOnly.push({
+          type: "text",
+          text: `あなたの水鏡カードが完成しました。\n\n振り返りレポートはこちら:\n${data.sapApiUrl}/mizukagami/report/${sessionId}`,
+        });
+      }
+      if (textOnly.length > 0) {
+        await lineClient.pushMessage(data.lineUserId, textOnly.slice(0, 5));
+      }
+    }
   }
 }
