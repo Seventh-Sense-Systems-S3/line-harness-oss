@@ -25,10 +25,6 @@ import type { Env } from "../index.js";
 const webhook = new Hono<Env>();
 
 webhook.post("/webhook", async (c) => {
-  console.error(
-    "[DEBUG-TOP-ERR] /webhook hit, ua=",
-    c.req.header("user-agent")?.substring(0, 20),
-  );
   const rawBody = await c.req.text();
   const signature = c.req.header("X-Line-Signature") ?? "";
   const db = c.env.DB;
@@ -384,10 +380,6 @@ async function handleEvent(
     const incomingText = textMessage.text;
     const now = jstNow();
     const logId = crypto.randomUUID();
-    console.log(
-      "[DEBUG-MIZU] entered text-handler, userId=",
-      userId?.substring(0, 8),
-    );
 
     // 受信メッセージをログに記録
     await db
@@ -399,26 +391,11 @@ async function handleEvent(
       .run();
 
     // MIZUKAGAMI Mirror Session — 水鏡 Worker に転送（最優先で処理）
-    console.log(
-      "[DEBUG-MIZU] url_set=",
-      !!mizukagamiWorkerUrl,
-      "url_len=",
-      mizukagamiWorkerUrl?.length ?? 0,
-      "key_set=",
-      !!mizukagamiApiKey,
-      "key_len=",
-      mizukagamiApiKey?.length ?? 0,
-    );
     if (mizukagamiApiKey && (mizukagamiService || mizukagamiWorkerUrl)) {
       try {
         const mizuUrl = mizukagamiService
           ? "https://mizukagami/handle"
           : `${mizukagamiWorkerUrl}/handle`;
-        console.log(
-          "[DEBUG-MIZU] invoking via",
-          mizukagamiService ? "service-binding" : "url-fetch",
-          mizuUrl,
-        );
         const replyToken = (event as unknown as { replyToken?: string })
           .replyToken;
         const req = new Request(mizuUrl, {
@@ -437,15 +414,8 @@ async function handleEvent(
         const mizuRes = mizukagamiService
           ? await mizukagamiService.fetch(req)
           : await fetch(req);
-        console.error(
-          "[DEBUG-MIZU] response status=",
-          mizuRes.status,
-          "ok=",
-          mizuRes.ok,
-        );
         if (mizuRes.ok) {
           const mizuResult = await mizuRes.json<{ handled: boolean }>();
-          console.error("[DEBUG-MIZU] handled=", mizuResult.handled);
           if (mizuResult.handled) {
             await fireEvent(
               db,
