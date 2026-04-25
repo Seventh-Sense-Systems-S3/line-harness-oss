@@ -47,13 +47,41 @@ function pick(obj, ...keys) {
 // ================================================================
 // Legacy: iqb_entries mapping + UPSERT (Course 2 AI clone RAG 用、温存)
 // ================================================================
+// 対応フォーマット:
+//   旧) 直接フィールド形式: { tenant_id, user_id, week_number, week_label, entry_data, ... }
+//   新) スフィGPT パラメータ形式: { action, parameters: { sheetId, week, row, 意味, ... } }
+//       → tenant_id="7thsense", user_id=sheetId, week_label="Week N" として変換
 function mapIncomingToIqbEntry(incoming) {
-  const tenant_id = pick(incoming, "tenant_id", "tenantId");
-  const user_id = pick(incoming, "user_id", "userId");
-  const week_number = pick(incoming, "week_number", "weekNumber", "week");
-  const week_label = pick(incoming, "week_label", "weekLabel");
+  const p = incoming?.parameters ?? null;
+
+  // --- tenant_id: 旧フォーマット優先、新フォーマットでは固定値 "7thsense" ---
+  const tenant_id =
+    pick(incoming, "tenant_id", "tenantId") ??
+    (p != null ? "7thsense" : undefined);
+
+  // --- user_id: 旧フォーマット優先、新フォーマットでは sheetId を使用 ---
+  const user_id =
+    pick(incoming, "user_id", "userId") ?? pick(p, "sheetId", "sheet_id");
+
+  // --- week_number: 旧フォーマット優先、新フォーマットでは parameters.week ---
+  const week_number_raw =
+    pick(incoming, "week_number", "weekNumber", "week") ?? pick(p, "week");
+  const week_number =
+    week_number_raw !== undefined
+      ? typeof week_number_raw === "string"
+        ? parseInt(week_number_raw, 10)
+        : week_number_raw
+      : undefined;
+
+  // --- week_label: 旧フォーマット優先、新フォーマットでは "Week N" として導出 ---
+  const week_label =
+    pick(incoming, "week_label", "weekLabel") ??
+    (week_number !== undefined ? `Week ${week_number}` : undefined);
+
+  // --- entry_data: 旧フォーマット優先、新フォーマットでは parameters 全体 ---
   const entry_data =
-    pick(incoming, "entry_data", "entryData") ?? incoming.data ?? incoming;
+    pick(incoming, "entry_data", "entryData") ?? incoming.data ?? p ?? incoming;
+
   const version = pick(incoming, "version") ?? 1;
 
   if (
@@ -69,12 +97,13 @@ function mapIncomingToIqbEntry(incoming) {
   return {
     tenant_id,
     user_id,
-    week_number:
-      typeof week_number === "string" ? parseInt(week_number, 10) : week_number,
+    week_number,
     week_label,
     source_gpt_number:
       pick(incoming, "source_gpt_number", "sourceGptNumber") ?? null,
-    source_gpt_name: pick(incoming, "source_gpt_name", "sourceGptName") ?? null,
+    source_gpt_name:
+      pick(incoming, "source_gpt_name", "sourceGptName") ??
+      (p != null ? "TruthSphere" : null),
     entry_data,
     version: typeof version === "string" ? parseInt(version, 10) : version,
     is_finalized: pick(incoming, "is_finalized", "isFinalized") ?? false,
