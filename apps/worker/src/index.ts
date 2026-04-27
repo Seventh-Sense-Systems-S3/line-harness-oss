@@ -48,6 +48,7 @@ import { autoReplies } from "./routes/auto-replies.js";
 import { trafficPools } from "./routes/traffic-pools.js";
 import { meetCallback } from "./routes/meet-callback.js";
 import { messageTemplates } from "./routes/message-templates.js";
+import { supabaseWorkerNotify } from "./routes/supabase-worker-notify.js";
 
 export type Env = {
   Bindings: {
@@ -68,6 +69,9 @@ export type Env = {
     X_HARNESS_URL?: string;
     IG_HARNESS_URL?: string;
     IG_HARNESS_LINK_SECRET?: string;
+    // Worker completion notification (set via wrangler secret)
+    SUPABASE_WEBHOOK_SECRET?: string;
+    LINE_OWNER_USER_ID?: string;
   };
   Variables: {
     staff: { id: string; name: string; role: "owner" | "admin" | "staff" };
@@ -120,6 +124,7 @@ app.route("/", autoReplies);
 app.route("/", trafficPools);
 app.route("/", meetCallback);
 app.route("/", messageTemplates);
+app.route("/", supabaseWorkerNotify);
 
 // Self-hosted QR code proxy
 app.get("/api/qr", async (c) => {
