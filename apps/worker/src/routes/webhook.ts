@@ -124,8 +124,8 @@ webhook.post("/webhook", async (c) => {
           c.env.MIZUKAGAMI_API_KEY,
           c.env.MIZUKAGAMI,
           c.env.LIFF_URL,
-          c.env.SUPABASE_MIZUKAGAMI_URL,
-          c.env.SUPABASE_MIZUKAGAMI_SERVICE_KEY,
+          c.env.SUPABASE_URL,
+          c.env.SUPABASE_SERVICE_ROLE_KEY,
         );
       } catch (err) {
         console.error("Error handling webhook event:", err);
