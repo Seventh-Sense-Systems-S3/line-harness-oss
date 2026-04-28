@@ -124,6 +124,8 @@ webhook.post("/webhook", async (c) => {
           c.env.MIZUKAGAMI_API_KEY,
           c.env.MIZUKAGAMI,
           c.env.LIFF_URL,
+          c.env.SUPABASE_MIZUKAGAMI_URL,
+          c.env.SUPABASE_MIZUKAGAMI_SERVICE_KEY,
         );
       } catch (err) {
         console.error("Error handling webhook event:", err);
@@ -147,6 +149,8 @@ async function handleEvent(
   mizukagamiApiKey?: string,
   mizukagamiService?: Fetcher,
   liffUrl?: string,
+  supabaseMizukagamiUrl?: string,
+  supabaseMizukagamiServiceKey?: string,
 ): Promise<void> {
   if (event.type === "follow") {
     const userId =
@@ -201,6 +205,25 @@ async function handleEvent(
       console.log(
         `[follow] ref_code set to ${refCode} for friend ${friend.id}`,
       );
+    }
+
+    // 水鏡WEBセッションの自動同期（フォロー時にSupabaseからメタデータを取得してD1に書き込む）
+    if (supabaseMizukagamiUrl && supabaseMizukagamiServiceKey) {
+      try {
+        await syncMizukagamiOnFollow(
+          db,
+          friend.id,
+          userId,
+          supabaseMizukagamiUrl,
+          supabaseMizukagamiServiceKey,
+        );
+      } catch (err) {
+        // 同期失敗はフォロー処理全体を止めない（best-effort）
+        console.error(
+          `[mizukagami-sync] follow sync failed for ${userId}:`,
+          err,
+        );
+      }
     }
 
     // friend_add シナリオに登録（このアカウントのシナリオのみ）
@@ -829,6 +852,136 @@ async function handleEvent(
 
     return;
   }
+}
+
+/**
+ * 水鏡WEBセッション → D1 メタデータ同期（followイベント時）
+ *
+ * WEB版（LINEログイン経由）で診断を完了したユーザーが
+ * LINE公式アカウントをフォローしたとき、Supabaseのセッションデータを
+ * D1 friends.metadata に自動同期する。
+ *
+ * 冪等: metadata.mizukagami_session_id が既にセットされていればスキップ。
+ */
+async function syncMizukagamiOnFollow(
+  db: D1Database,
+  friendId: string,
+  lineUserId: string,
+  supabaseUrl: string,
+  supabaseServiceKey: string,
+): Promise<void> {
+  // 冪等チェック: 既に同期済みならスキップ
+  const existing = await db
+    .prepare("SELECT metadata FROM friends WHERE id = ?")
+    .bind(friendId)
+    .first<{ metadata: string | null }>();
+  const currentMeta = JSON.parse(existing?.metadata || "{}") as Record<
+    string,
+    unknown
+  >;
+  if (currentMeta.mizukagami_session_id) {
+    console.log(
+      `[mizukagami-sync] already synced for friend ${friendId}, skipping`,
+    );
+    return;
+  }
+
+  // Supabase REST API でWEBセッションを取得
+  const apiUrl =
+    `${supabaseUrl}/rest/v1/sap_mizukagami_line_sessions` +
+    `?line_user_id=eq.${encodeURIComponent(lineUserId)}` +
+    `&current_step=eq.completed` +
+    `&select=session_id,line_user_id,current_step,completed_at,innate_profile,card_data,user_keywords` +
+    `&order=completed_at.desc&limit=1`;
+
+  const resp = await fetch(apiUrl, {
+    headers: {
+      apikey: supabaseServiceKey,
+      Authorization: `Bearer ${supabaseServiceKey}`,
+      "Content-Type": "application/json",
+    },
+  });
+
+  if (!resp.ok) {
+    throw new Error(
+      `Supabase query failed: ${resp.status} ${await resp.text()}`,
+    );
+  }
+
+  const rows = (await resp.json()) as Array<Record<string, unknown>>;
+  if (!rows || rows.length === 0) {
+    console.log(
+      `[mizukagami-sync] no completed WEB session found for ${lineUserId}`,
+    );
+    return;
+  }
+
+  const session = rows[0];
+  const innateProfile = (
+    typeof session.innate_profile === "string"
+      ? JSON.parse(session.innate_profile)
+      : session.innate_profile
+  ) as Record<string, unknown> | null;
+  const cardData = (
+    typeof session.card_data === "string"
+      ? JSON.parse(session.card_data)
+      : session.card_data
+  ) as Record<string, unknown> | null;
+  const sm = (innateProfile?.soulMatch as Record<string, string>) ?? {};
+  const cd = (cardData ?? {}) as Record<string, unknown>;
+  const fp = (cd.five_powers as Record<string, string>) ?? {};
+  const clip = (s?: string) => (s ? s.slice(0, 200) : undefined);
+
+  const meta: Record<string, string | null> = {
+    mizukagami_session_id: (session.session_id as string) ?? null,
+    diagnosis_completed_at: (session.completed_at as string) ?? "",
+    mizukagami_funnel_stage: "0",
+    mizukagami_power_pattern: null,
+  };
+
+  const soulName = (cd.soul_name as string) ?? sm.soulName;
+  if (soulName) meta.soul_name = soulName;
+  if (cd.soul_no ?? sm.soulNo) meta.soul_no = String(cd.soul_no ?? sm.soulNo);
+  if (sm.innateSpiral) meta.innate_spiral = sm.innateSpiral;
+  if (sm.acquiredSystem) meta.acquired_system = sm.acquiredSystem;
+  if (sm.manifestedWisdom) meta.manifested_wisdom = sm.manifestedWisdom;
+  if (cd.closing_message) meta.soul_message = cd.closing_message as string;
+  if (cd.user_essence) meta.user_essence = cd.user_essence as string;
+
+  const words = (cd.user_words as string[]) ?? [];
+  if (words.length > 0) {
+    meta.mizukagami_user_words = JSON.stringify(words.slice(0, 6));
+    if (words[0]) meta.mizukagami_user_word_1 = words[0];
+    if (words[1]) meta.mizukagami_user_word_2 = words[1];
+    if (words[2]) meta.mizukagami_user_word_3 = words[2];
+    meta.mizukagami_user_words_joined = words.slice(0, 6).join("・");
+  }
+
+  if (fp.strength) meta.mizukagami_five_powers_strength = clip(fp.strength)!;
+  if (fp.potential) meta.mizukagami_five_powers_potential = clip(fp.potential)!;
+  if (fp.depth) meta.mizukagami_five_powers_depth = clip(fp.depth)!;
+  if (fp.hidden) meta.mizukagami_five_powers_hidden = clip(fp.hidden)!;
+  if (fp.recognized)
+    meta.mizukagami_five_powers_recognized = clip(fp.recognized)!;
+
+  if (cd.convergence_narrative)
+    meta.mizukagami_convergence_narrative = cd.convergence_narrative as string;
+
+  const keywords = session.user_keywords as string[] | null;
+  if (keywords && keywords.length > 0)
+    meta.mizukagami_keywords = JSON.stringify(keywords);
+
+  // D1に直接マージ書き込み（nullキーは保持して既存データをクリア）
+  const updatedMeta = { ...currentMeta, ...meta };
+  await db
+    .prepare("UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?")
+    .bind(JSON.stringify(updatedMeta), jstNow(), friendId)
+    .run();
+
+  console.log(
+    `[mizukagami-sync] synced WEB session ${meta.mizukagami_session_id} → friend ${friendId}` +
+      ` (soul_name: ${meta.soul_name ?? "n/a"})`,
+  );
 }
 
 export { webhook };
