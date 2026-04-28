@@ -203,16 +203,17 @@ async function getOrCreateTag(
 }
 
 // line_user_id から Harness friend id を取得
+// friends API は { data: { items: [...], total: N } } 形式で返す（tags API の { data: [] } とは異なる）
 async function findFriendByLineUserId(
   lineUserId: string,
 ): Promise<HarnessFriend | null> {
   try {
-    const res = await harnessGet<{ data?: HarnessFriend[] } | HarnessFriend[]>(
-      `/api/friends?lineUserId=${lineUserId}&limit=1`,
-    );
+    const res = await harnessGet<
+      { data?: { items?: HarnessFriend[] } | HarnessFriend[] } | HarnessFriend[]
+    >(`/api/friends?lineUserId=${lineUserId}&limit=1`);
     const friends: HarnessFriend[] = Array.isArray(res)
       ? res
-      : (res as any)?.data || [];
+      : (res as any)?.data?.items || (res as any)?.data || [];
     return friends.length > 0 ? friends[0] : null;
   } catch {
     return null;
@@ -281,6 +282,15 @@ function extractMetadata(session: MizukagamiSession): Record<string, string> {
     meta.mizukagami_user_words = JSON.stringify(cd.user_words.slice(0, 6));
   }
 
+  // user_words スカラー化（LINE Harness {{metadata.KEY}} はスカラー値を期待するため）
+  if (cd.user_words && cd.user_words.length > 0) {
+    const words = cd.user_words;
+    if (words[0]) meta.mizukagami_user_word_1 = words[0];
+    if (words[1]) meta.mizukagami_user_word_2 = words[1];
+    if (words[2]) meta.mizukagami_user_word_3 = words[2];
+    meta.mizukagami_user_words_joined = words.slice(0, 6).join("・");
+  }
+
   // concern: conversation_history から抽出
   const concern = extractConcern(session.conversation_history);
   if (concern) meta.mizukagami_concern = concern;
@@ -295,6 +305,23 @@ function extractMetadata(session: MizukagamiSession): Record<string, string> {
     if (fp.recognized) meta.mizukagami_five_powers_recognized = fp.recognized;
   }
 
+  // power_pattern: 最大値の軸を人間可読ラベルに変換（LINE Harness の metadata_equals 条件に使用）
+  if (cd.five_powers) {
+    const fp = cd.five_powers;
+    const axes = [
+      { label: "hidden_gem", value: parseFloat(fp.hidden ?? "0") },
+      { label: "potential_type", value: parseFloat(fp.potential ?? "0") },
+      { label: "strength_type", value: parseFloat(fp.strength ?? "0") },
+      { label: "depth_type", value: parseFloat(fp.depth ?? "0") },
+      { label: "recognized_type", value: parseFloat(fp.recognized ?? "0") },
+    ].filter((a) => !isNaN(a.value) && a.value > 0);
+
+    if (axes.length > 0) {
+      const dominant = axes.reduce((a, b) => (a.value >= b.value ? a : b));
+      meta.mizukagami_power_pattern = dominant.label;
+    }
+  }
+
   // convergence_narrative
   if (cd.convergence_narrative) {
     meta.mizukagami_convergence_narrative = cd.convergence_narrative;
@@ -304,6 +331,9 @@ function extractMetadata(session: MizukagamiSession): Record<string, string> {
   if (session.user_keywords && session.user_keywords.length > 0) {
     meta.mizukagami_keywords = JSON.stringify(session.user_keywords);
   }
+
+  // funnel_stage: バックフィル時点では全員 Stage 0（水鏡診断完了）
+  meta.mizukagami_funnel_stage = "0";
 
   return meta;
 }
@@ -472,9 +502,11 @@ async function main() {
       console.log(
         `  [DRY] ${progress} ${friend.displayName}` +
           ` → soul_name: ${metadata.soul_name ?? "n/a"}` +
-          `, user_words: ${metadata.mizukagami_user_words ? JSON.parse(metadata.mizukagami_user_words).length + "件" : "n/a"}` +
-          `, concern: ${(metadata.mizukagami_concern ?? "").slice(0, 20) || "n/a"}` +
-          `, five_powers_strength: ${metadata.mizukagami_five_powers_strength ?? "n/a"}`,
+          `, user_word_1: ${metadata.mizukagami_user_word_1 ?? "n/a"}` +
+          `, user_words_joined: ${metadata.mizukagami_user_words_joined ?? "n/a"}` +
+          `, power_pattern: ${metadata.mizukagami_power_pattern ?? "n/a"}` +
+          `, funnel_stage: ${metadata.mizukagami_funnel_stage}` +
+          `, concern: ${(metadata.mizukagami_concern ?? "").slice(0, 20) || "n/a"}`,
       );
       results.completed.synced++;
     }
@@ -584,10 +616,28 @@ async function main() {
   console.log(`   → 特定の魂タイプにパーソナライズメッセージ`);
   console.log("\n📋 新規追加メタデータ変数:");
   console.log(
-    `   {{metadata.mizukagami_user_words}}        — ユーザーの力強いフレーズ（JSON配列）`,
+    `   {{metadata.mizukagami_user_words}}         — ユーザーの力強いフレーズ（JSON配列）`,
   );
   console.log(
-    `   {{metadata.mizukagami_concern}}           — 診断で語った一番の悩み`,
+    `   {{metadata.mizukagami_user_word_1}}        — 力強いフレーズ 1位（スカラー）`,
+  );
+  console.log(
+    `   {{metadata.mizukagami_user_word_2}}        — 力強いフレーズ 2位（スカラー）`,
+  );
+  console.log(
+    `   {{metadata.mizukagami_user_word_3}}        — 力強いフレーズ 3位（スカラー）`,
+  );
+  console.log(
+    `   {{metadata.mizukagami_user_words_joined}}  — 力強いフレーズ「・」区切り文字列`,
+  );
+  console.log(
+    `   {{metadata.mizukagami_power_pattern}}      — 最大5軸ラベル (hidden_gem/potential_type/...)`,
+  );
+  console.log(
+    `   {{metadata.mizukagami_funnel_stage}}       — ファネルステージ（"0" = 診断完了）`,
+  );
+  console.log(
+    `   {{metadata.mizukagami_concern}}            — 診断で語った一番の悩み`,
   );
   console.log(`   {{metadata.mizukagami_five_powers_strength}}  — 5軸: 力`);
   console.log(`   {{metadata.mizukagami_five_powers_potential}} — 5軸: 可能性`);
@@ -602,7 +652,7 @@ async function main() {
     `   {{metadata.mizukagami_convergence_narrative}} — 12叡智収束の物語`,
   );
   console.log(
-    `   {{metadata.mizukagami_keywords}}          — 診断キーワード（JSON配列）`,
+    `   {{metadata.mizukagami_keywords}}           — 診断キーワード（JSON配列）`,
   );
 }
 
