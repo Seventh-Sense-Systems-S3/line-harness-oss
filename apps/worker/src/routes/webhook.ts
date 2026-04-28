@@ -891,7 +891,7 @@ async function syncMizukagamiOnFollow(
     `${supabaseUrl}/rest/v1/sap_mizukagami_line_sessions` +
     `?line_user_id=eq.${encodeURIComponent(lineUserId)}` +
     `&current_step=eq.completed` +
-    `&select=session_id,line_user_id,current_step,completed_at,innate_profile,card_data,user_keywords` +
+    `&select=session_id,line_user_id,current_step,completed_at,innate_profile,card_data,user_keywords,conversation_history` +
     `&order=completed_at.desc&limit=1`;
 
   const resp = await fetch(apiUrl, {
@@ -970,6 +970,24 @@ async function syncMizukagamiOnFollow(
   const keywords = session.user_keywords as string[] | null;
   if (keywords && keywords.length > 0)
     meta.mizukagami_keywords = JSON.stringify(keywords);
+
+  // q1〜q6 会話回答（各ステップの最後の user メッセージ、200 字以内）
+  const convHistory = session.conversation_history as Array<{
+    role: string;
+    content: string;
+    step?: string;
+  }> | null;
+  if (convHistory && convHistory.length > 0) {
+    for (const step of ["q1", "q2", "q3", "q4", "q5", "q6"]) {
+      const msgs = convHistory.filter(
+        (m) => m.role === "user" && m.step === step,
+      );
+      if (msgs.length > 0) {
+        const text = msgs[msgs.length - 1].content.trim().slice(0, 200);
+        if (text.length >= 3) meta[`mizukagami_${step}_answer`] = text;
+      }
+    }
+  }
 
   // D1に直接マージ書き込み（nullキーは保持して既存データをクリア）
   const updatedMeta = { ...currentMeta, ...meta };

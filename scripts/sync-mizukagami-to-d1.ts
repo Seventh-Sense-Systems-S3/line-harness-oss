@@ -247,6 +247,24 @@ function extractConcern(
   return candidates[0]?.content.trim() ?? "";
 }
 
+// ── q1〜q6 回答抽出 ─────────────────────────────────────────────────
+// 各ステップごとに、最後の user メッセージを取得して 200 字に切り詰める
+function extractConversationAnswers(
+  history: ConversationMessage[] | null | undefined,
+  steps: string[],
+): Record<string, string> {
+  if (!history || history.length === 0) return {};
+  const result: Record<string, string> = {};
+  for (const step of steps) {
+    const msgs = history.filter((m) => m.role === "user" && m.step === step);
+    if (msgs.length > 0) {
+      const text = msgs[msgs.length - 1].content.trim().slice(0, 200);
+      if (text.length >= 3) result[step] = text;
+    }
+  }
+  return result;
+}
+
 // ── 水鏡データ → メタデータ変換 ─────────────────────────────────────
 function extractMetadata(
   session: MizukagamiSession,
@@ -328,6 +346,43 @@ function extractMetadata(
   // five_powers は LLM テキストのため parseFloat は常に NaN → power_pattern は無効だった
   meta.mizukagami_power_pattern = null;
 
+  // q1〜q6 会話回答（各ステップの最後の user メッセージ、200 字以内）
+  const qAnswers = extractConversationAnswers(session.conversation_history, [
+    "q1",
+    "q2",
+    "q3",
+    "q4",
+    "q5",
+    "q6",
+  ]);
+  for (const [step, answer] of Object.entries(qAnswers)) {
+    meta[`mizukagami_${step}_answer`] = answer;
+  }
+
+  return meta;
+}
+
+// ── 途中離脱者メタデータ変換 ─────────────────────────────────────────
+// 完了データ（soul_name等）はないが last_step + 進んだステップの回答は保存できる
+function extractIncompleteMetadata(
+  session: MizukagamiSession,
+): Record<string, string | null> {
+  const meta: Record<string, string | null> = {
+    mizukagami_session_id: session.session_id,
+    mizukagami_last_step: session.current_step,
+    mizukagami_funnel_stage: "0",
+  };
+  const qAnswers = extractConversationAnswers(session.conversation_history, [
+    "q1",
+    "q2",
+    "q3",
+    "q4",
+    "q5",
+    "q6",
+  ]);
+  for (const [step, answer] of Object.entries(qAnswers)) {
+    meta[`mizukagami_${step}_answer`] = answer;
+  }
   return meta;
 }
 
@@ -537,15 +592,28 @@ async function main() {
         continue;
       }
 
-      if (!dryRun && incompleteTagId) {
+      const incompleteMeta = extractIncompleteMetadata(session);
+      const qCount = Object.keys(incompleteMeta).filter((k) =>
+        k.includes("_answer"),
+      ).length;
+
+      if (!dryRun) {
         try {
-          await harnessPost(`/api/friends/${friend.id}/tags`, {
-            tagId: incompleteTagId,
-          });
+          // メタデータ同期（last_step + 進んだステップの回答）
+          await harnessPut(
+            `/api/friends/${friend.id}/metadata`,
+            incompleteMeta,
+          );
+          // 途中離脱タグ付与
+          if (incompleteTagId) {
+            await harnessPost(`/api/friends/${friend.id}/tags`, {
+              tagId: incompleteTagId,
+            });
+          }
           results.incomplete.tagged++;
           if ((i + 1) % 20 === 0 || i + 1 === incompleteList.length) {
             console.log(
-              `  ⚠️  ${progress} ${friend.displayName} — 途中離脱タグ付与`,
+              `  ⚠️  ${progress} ${friend.displayName} — last_step: ${session.current_step}, q_answers: ${qCount}件`,
             );
           }
         } catch (err) {
@@ -553,7 +621,7 @@ async function main() {
         }
       } else if (dryRun) {
         console.log(
-          `  [DRY] ${progress} ${friend.displayName} → 途中離脱タグ付与予定 (step: ${session.current_step})`,
+          `  [DRY] ${progress} ${friend.displayName} → last_step: ${session.current_step}, q_answers: ${qCount}件`,
         );
         results.incomplete.tagged++;
       }
