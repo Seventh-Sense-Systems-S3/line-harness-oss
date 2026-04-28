@@ -248,11 +248,13 @@ function extractConcern(
 }
 
 // ── 水鏡データ → メタデータ変換 ─────────────────────────────────────
-function extractMetadata(session: MizukagamiSession): Record<string, string> {
+function extractMetadata(
+  session: MizukagamiSession,
+): Record<string, string | null> {
   const sm = session.innate_profile?.soulMatch ?? {};
   const cd = session.card_data ?? {};
 
-  const meta: Record<string, string> = {
+  const meta: Record<string, string | null> = {
     mizukagami_session_id: session.session_id,
     diagnosis_completed_at: session.completed_at ?? "",
   };
@@ -295,31 +297,18 @@ function extractMetadata(session: MizukagamiSession): Record<string, string> {
   const concern = extractConcern(session.conversation_history);
   if (concern) meta.mizukagami_concern = concern;
 
-  // five_powers: 各軸を個別キーに展開
+  // five_powers: LLM生成テキストを各軸の個別キーに保存（256文字制限対策で200字に切り詰め）
+  // ※ power_pattern（parseFloat ロジック）は廃止 — five_powers はテキストであり数値変換不可
   if (cd.five_powers) {
     const fp = cd.five_powers;
-    if (fp.strength) meta.mizukagami_five_powers_strength = fp.strength;
-    if (fp.potential) meta.mizukagami_five_powers_potential = fp.potential;
-    if (fp.depth) meta.mizukagami_five_powers_depth = fp.depth;
-    if (fp.hidden) meta.mizukagami_five_powers_hidden = fp.hidden;
-    if (fp.recognized) meta.mizukagami_five_powers_recognized = fp.recognized;
-  }
-
-  // power_pattern: 最大値の軸を人間可読ラベルに変換（LINE Harness の metadata_equals 条件に使用）
-  if (cd.five_powers) {
-    const fp = cd.five_powers;
-    const axes = [
-      { label: "hidden_gem", value: parseFloat(fp.hidden ?? "0") },
-      { label: "potential_type", value: parseFloat(fp.potential ?? "0") },
-      { label: "strength_type", value: parseFloat(fp.strength ?? "0") },
-      { label: "depth_type", value: parseFloat(fp.depth ?? "0") },
-      { label: "recognized_type", value: parseFloat(fp.recognized ?? "0") },
-    ].filter((a) => !isNaN(a.value) && a.value > 0);
-
-    if (axes.length > 0) {
-      const dominant = axes.reduce((a, b) => (a.value >= b.value ? a : b));
-      meta.mizukagami_power_pattern = dominant.label;
-    }
+    const clip = (s?: string) => (s ? s.slice(0, 200) : undefined);
+    if (fp.strength) meta.mizukagami_five_powers_strength = clip(fp.strength)!;
+    if (fp.potential)
+      meta.mizukagami_five_powers_potential = clip(fp.potential)!;
+    if (fp.depth) meta.mizukagami_five_powers_depth = clip(fp.depth)!;
+    if (fp.hidden) meta.mizukagami_five_powers_hidden = clip(fp.hidden)!;
+    if (fp.recognized)
+      meta.mizukagami_five_powers_recognized = clip(fp.recognized)!;
   }
 
   // convergence_narrative
@@ -334,6 +323,10 @@ function extractMetadata(session: MizukagamiSession): Record<string, string> {
 
   // funnel_stage: バックフィル時点では全員 Stage 0（水鏡診断完了）
   meta.mizukagami_funnel_stage = "0";
+
+  // power_pattern 廃止マイグレーション: 既存データを null クリア
+  // five_powers は LLM テキストのため parseFloat は常に NaN → power_pattern は無効だった
+  meta.mizukagami_power_pattern = null;
 
   return meta;
 }
@@ -502,8 +495,7 @@ async function main() {
         `  [DRY] ${progress} ${friend.displayName}` +
           ` → soul_name: ${metadata.soul_name ?? "n/a"}` +
           `, user_word_1: ${metadata.mizukagami_user_word_1 ?? "n/a"}` +
-          `, user_words_joined: ${metadata.mizukagami_user_words_joined ?? "n/a"}` +
-          `, power_pattern: ${metadata.mizukagami_power_pattern ?? "n/a"}` +
+          `, five_powers_hidden: ${metadata.mizukagami_five_powers_hidden?.slice(0, 20) ?? "n/a"}` +
           `, funnel_stage: ${metadata.mizukagami_funnel_stage}` +
           `, concern: ${(metadata.mizukagami_concern ?? "").slice(0, 20) || "n/a"}`,
       );
