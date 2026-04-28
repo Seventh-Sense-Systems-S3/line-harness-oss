@@ -71,8 +71,8 @@ export type Env = {
     IG_HARNESS_LINK_SECRET?: string;
     WORKER_NOTIFY_SECRET: string;
     OWNER_LINE_USER_ID: string;
-    SUPABASE_MIZUKAGAMI_URL?: string;
-    SUPABASE_MIZUKAGAMI_SERVICE_KEY?: string;
+    SUPABASE_URL?: string;
+    SUPABASE_SERVICE_ROLE_KEY?: string;
   };
   Variables: {
     staff: { id: string; name: string; role: "owner" | "admin" | "staff" };

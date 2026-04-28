@@ -1,0 +1,40 @@
+# LINE Harness Worker — 開発用環境変数テンプレート
+#
+# 使い方:
+#   cp apps/worker/.dev.vars.example apps/worker/.dev.vars
+#   .dev.vars に実際の値を入力して wrangler dev で使用する
+#
+# 本番 secrets は `wrangler secret put <NAME> --name line-crm-worker` で設定済み。
+# 新規 env var 追加前に必ず `wrangler secret list --name line-crm-worker` で確認すること。
+
+# === LINE ===
+LINE_CHANNEL_ACCESS_TOKEN=
+LINE_CHANNEL_ID=
+LINE_CHANNEL_SECRET=
+
+# === Cloudflare Worker 認証 ===
+API_KEY=
+
+# === Supabase（line-crm-worker と共有。mizukagami WEB セッション同期に使用）===
+SUPABASE_URL=https://eizsilomeafyhftuvqst.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=
+
+# === Soul Agent Platform ===
+SAP_API_KEY=
+SAP_API_URL=
+
+SOUL_AGENT_API_KEY=
+SOUL_AGENT_DIAGNOSIS_URL=
+
+# === Mizukagami Worker ===
+MIZUKAGAMI_API_KEY=
+MIZUKAGAMI_WORKER_URL=
+
+# === Vercel ===
+VERCEL_PROTECTION_BYPASS=
+
+# === LINE Notify (Worker完了通知) ===
+WORKER_NOTIFY_SECRET=
+
+# === オーナー LINE User ID ===
+OWNER_LINE_USER_ID=
