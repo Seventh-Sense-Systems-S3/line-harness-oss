@@ -477,12 +477,11 @@ async function main() {
         // 3. メタデータを更新（PUT /api/friends/:id/metadata はマージなので既存データは保持）
         await harnessPut(`/api/friends/${friend.id}/metadata`, metadata);
 
-        // 4. 完了タグを付与
+        // 4. 完了タグを付与（正しいエンドポイント: POST /api/friends/:id/tags with { tagId }）
         if (completedTagId) {
-          await harnessPost(
-            `/api/friends/${friend.id}/tags/${completedTagId}`,
-            {},
-          );
+          await harnessPost(`/api/friends/${friend.id}/tags`, {
+            tagId: completedTagId,
+          });
         }
 
         results.completed.synced++;
@@ -548,10 +547,9 @@ async function main() {
 
       if (!dryRun && incompleteTagId) {
         try {
-          await harnessPost(
-            `/api/friends/${friend.id}/tags/${incompleteTagId}`,
-            {},
-          );
+          await harnessPost(`/api/friends/${friend.id}/tags`, {
+            tagId: incompleteTagId,
+          });
           results.incomplete.tagged++;
           if ((i + 1) % 20 === 0 || i + 1 === incompleteList.length) {
             console.log(
