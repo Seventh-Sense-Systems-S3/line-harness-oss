@@ -224,6 +224,20 @@ async function handleEvent(
           err,
         );
       }
+
+      // display_name を Supabase に逆同期（ファネル分析用: 誰がどのステップにいるか可視化）
+      if (profile?.displayName) {
+        try {
+          await syncDisplayNameToSupabase(
+            userId,
+            profile.displayName,
+            supabaseMizukagamiUrl,
+            supabaseMizukagamiServiceKey,
+          );
+        } catch (err) {
+          console.error(`[display-name-sync] failed for ${userId}:`, err);
+        }
+      }
     }
 
     // friend_add シナリオに登録（このアカウントのシナリオのみ）
@@ -999,6 +1013,40 @@ async function syncMizukagamiOnFollow(
   console.log(
     `[mizukagami-sync] synced WEB session ${meta.mizukagami_session_id} → friend ${friendId}` +
       ` (soul_name: ${meta.soul_name ?? "n/a"})`,
+  );
+}
+
+/**
+ * follow 時に取得した LINE display_name を Supabase sap_mizukagami_line_sessions に書き込む。
+ * ファネル分析で「誰がどのステップにいるか」を名前付きで把握するために使用。
+ * best-effort: 失敗してもフォロー処理全体は止めない。
+ */
+async function syncDisplayNameToSupabase(
+  lineUserId: string,
+  displayName: string,
+  supabaseUrl: string,
+  supabaseServiceKey: string,
+): Promise<void> {
+  const resp = await fetch(
+    `${supabaseUrl}/rest/v1/sap_mizukagami_line_sessions?line_user_id=eq.${encodeURIComponent(lineUserId)}`,
+    {
+      method: "PATCH",
+      headers: {
+        apikey: supabaseServiceKey,
+        Authorization: `Bearer ${supabaseServiceKey}`,
+        "Content-Type": "application/json",
+        Prefer: "return=minimal",
+      },
+      body: JSON.stringify({ display_name: displayName }),
+    },
+  );
+  if (!resp.ok) {
+    throw new Error(
+      `Supabase display_name sync failed: ${resp.status} ${await resp.text()}`,
+    );
+  }
+  console.log(
+    `[display-name-sync] synced "${displayName}" → line_user_id=${lineUserId}`,
   );
 }
 
