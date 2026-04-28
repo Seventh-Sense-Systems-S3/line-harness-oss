@@ -295,6 +295,18 @@ async function processSingleDelivery(
   }
   await deliveryClient.pushMessage(friend.line_user_id, [message]);
 
+  // Advance mizukagami funnel stage: 0 → 1 on first message delivery (idempotent)
+  if (metadata.mizukagami_funnel_stage === "0") {
+    const updatedMeta = { ...metadata, mizukagami_funnel_stage: "1" };
+    await db
+      .prepare("UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?")
+      .bind(JSON.stringify(updatedMeta), jstNow(), friend.id)
+      .run();
+    console.log(
+      `[funnel] friend ${friend.id} advanced: mizukagami_funnel_stage 0 → 1`,
+    );
+  }
+
   // Log outgoing message
   const logId = crypto.randomUUID();
   await db
