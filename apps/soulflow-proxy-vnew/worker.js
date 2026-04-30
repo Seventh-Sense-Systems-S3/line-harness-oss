@@ -64,19 +64,23 @@ function mapIncomingToIqbEntry(incoming) {
     pick(incoming, "user_id", "userId") ?? pick(p, "sheetId", "sheet_id");
 
   // --- week_number: 旧フォーマット優先、新フォーマットでは parameters.week ---
+  // "Week4_世界観" のような文字列から数値を抽出する (/\d+/ で先頭数字列を取得)
   const week_number_raw =
     pick(incoming, "week_number", "weekNumber", "week") ?? pick(p, "week");
   const week_number =
     week_number_raw !== undefined
       ? typeof week_number_raw === "string"
-        ? parseInt(week_number_raw, 10)
+        ? parseInt(week_number_raw.match(/\d+/)?.[0] ?? "", 10)
         : week_number_raw
       : undefined;
 
-  // --- week_label: 旧フォーマット優先、新フォーマットでは "Week N" として導出 ---
+  // --- week_label: 旧フォーマット優先、新フォーマットでは parameters.week をそのまま使用 ---
   const week_label =
     pick(incoming, "week_label", "weekLabel") ??
-    (week_number !== undefined ? `Week ${week_number}` : undefined);
+    pick(p, "week") ??
+    (week_number !== undefined && !isNaN(week_number)
+      ? `Week ${week_number}`
+      : undefined);
 
   // --- entry_data: 旧フォーマット優先、新フォーマットでは parameters 全体 ---
   const entry_data =
@@ -158,7 +162,10 @@ function mapIncomingToSoulMemory(incoming) {
 
   return {
     sheet_id,
-    week: typeof week === "string" ? parseInt(week, 10) : week,
+    week:
+      typeof week === "string"
+        ? parseInt(week.match(/\d+/)?.[0] ?? "", 10)
+        : week,
     row_number:
       typeof row_number === "string" ? parseInt(row_number, 10) : row_number,
     meaning: pick(p, "意味", "meaning") ?? null,
