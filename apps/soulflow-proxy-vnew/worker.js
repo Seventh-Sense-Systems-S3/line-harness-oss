@@ -407,15 +407,22 @@ export default {
           body: JSON.stringify(incoming),
         });
 
-        gasOk = resp.ok;
         const ct = resp.headers.get("content-type") || "";
         if (ct.includes("application/json")) {
           gasPayload = await resp.json();
+          // GAS は HTTP 200 で JSON を返すが、内部 status が 4xx/5xx の場合は失敗扱い
+          gasOk = resp.ok && (gasPayload?.status ?? 200) < 400;
         } else {
+          // GAS が HTML エラーページを返した場合（権限エラー等）
+          const rawText = await resp.text();
           gasPayload = {
-            status: resp.status,
-            body: { raw: await resp.text() },
+            status: 403,
+            body: {
+              error: "GAS returned non-JSON response (permission error?)",
+              raw: rawText.slice(0, 500),
+            },
           };
+          gasOk = false;
         }
 
         if (typeof gasPayload?.body !== "object") {
@@ -433,15 +440,19 @@ export default {
 
       // GAS 成功時のみ Supabase 書き込みに進む (既存動作維持)
       if (gasOk) {
-        // (2) iqb_entries UPSERT (legacy, best-effort) — 旧フォーマット payload 用
-        try {
-          const iqbResult = await upsertIqbEntry(env, incoming);
-          gasPayload.body = { ...(gasPayload.body ?? {}), iqb: iqbResult };
-        } catch (e) {
-          gasPayload.body = {
-            ...(gasPayload.body ?? {}),
-            iqb: { ok: false, error: String(e) },
-          };
+        // (2) iqb_entries UPSERT (legacy, best-effort) — 旧フォーマット payload 専用
+        // 新フォーマット (action: sendToSoulSheet) は soul_memories が正本のため skip
+        const isNewFormat = incoming?.action === "sendToSoulSheet";
+        if (!isNewFormat) {
+          try {
+            const iqbResult = await upsertIqbEntry(env, incoming);
+            gasPayload.body = { ...(gasPayload.body ?? {}), iqb: iqbResult };
+          } catch (e) {
+            gasPayload.body = {
+              ...(gasPayload.body ?? {}),
+              iqb: { ok: false, error: String(e) },
+            };
+          }
         }
 
         // (3) Two-Track soul_memories dual-write
