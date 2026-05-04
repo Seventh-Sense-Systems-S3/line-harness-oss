@@ -86,8 +86,8 @@ def main():
     # 水鏡完了190人。最もデータが豊富 → Soul-resonantの最高峰。
     # user_words 3個verbatim + soul_name + innate_spiral + soul_message。
     sid, sql = make_scenario(
-        name="gw_4a_completed",
-        description="第4世代 水鏡完了190人へ進化告知 + チャレンジ告知。5/9 19:00→21:00→翌8:00 の3通配信",
+        name="🟢01｜5/9 水鏡完走 190人 → チャレンジ招待",
+        description="[自動発火] タグ付き次第 自動配信。3通 (19:00→21:00→翌8:00)。Soul-resonant: user_words×3 + soul_name + soul_message 使用。URL差込後に is_active=1 にする",
         trigger_type="tag_added",
         trigger_tag_id=TAG_MIZUKAGAMI_DONE,
     )
@@ -137,8 +137,8 @@ Day 3 (5/14 木) 21:00 — How+Buy
     # ==================== シナリオ 2: gw_4cd1_apology_ignition ====================
     # 第4世代 step1stuck(40人) + q1stuck(7人) = 47人。全面お詫び + IGNITION無料。
     sid, sql = make_scenario(
-        name="gw_4cd1_apology_ignition",
-        description="第4世代 4-C step1stuck 40人 + 4-D1 q1stuck 7人 = 47人へ全面お詫び+IGNITION無料。manual で対象タグから一括 enroll する想定。5/10 12:00→12:30",
+        name="🔴02｜5/10 途中止まり 47人 → 謝罪＋IGNITION無料",
+        description="[手動Enroll必須] step1stuck 40人 + q1stuck 7人 を手動で一括登録。5/10 12:00→12:30。IGNITION無料URLを差し込んでから実行",
         trigger_type="manual",
         trigger_tag_id=None,
     )
@@ -167,8 +167,8 @@ IGNITION 3日間チャレンジ
     # ==================== シナリオ 3: gw_4b_vip_rescue ====================
     # 4人のみ。子竜が手作業でカスタマイズして送る。
     sid, sql = make_scenario(
-        name="gw_4b_vip_rescue",
-        description="第4世代 4-B card_stuck 4人 VIP救出 (子竜直接DM・手動カスタマイズ前提)。5/10 14:00 順次手動enroll",
+        name="⚡03｜5/10 VIP直DM 4人 → card直前 個別救出",
+        description="[要カスタマイズ] 4人それぞれに個別ZOOM URLを手で入れて送る。5/10 14:00 順次。1人ずつ手動enroll＆文面確認必須",
         trigger_type="manual",
         trigger_tag_id=None,
     )
@@ -192,8 +192,8 @@ IGNITION 3日間チャレンジ
     # 中盤離脱64人。水鏡の途中で止まったが、ある程度体験している。
     # 進化フレーミングで「あの続きが、ここにある」と再開を促す。
     sid, sql = make_scenario(
-        name="gw_4d2_restart",
-        description="第4世代 4-D2 中盤離脱 q2-q6 64人へ進化告知+再開招待。5/11 19:00→19:30",
+        name="🟢04｜5/11 中盤離脱 64人 → 再開招待",
+        description="[自動発火] タグ付き次第 自動配信。2通 (19:00→19:30)。水鏡q2-q6で止まった人への進化告知＋チャレンジ案内",
         trigger_type="tag_added",
         trigger_tag_id=TAG_MID_DROPOUT,
     )
@@ -222,8 +222,8 @@ IGNITION 3日間チャレンジ
     # 第3世代40人。JSサミット②で分身AI希望を示してくれたのに、何も届いていなかった。
     # 謝罪 + サミット動画 + チャレンジ特別招待。
     sid, sql = make_scenario(
-        name="gw_gen3_apology_video",
-        description="第3世代 分身AI希望者(JSサミット②)40人へ詫び+サミット40分動画+チャレンジ特別招待。5/11 21:00→21:30",
+        name="🟢05｜5/11 第3世代 40人 → 謝罪＋サミット動画",
+        description="[自動発火] 2通 (21:00→21:30)。JSサミット②で分身AI希望を示したのに何も届いていなかった人へ。サミット動画URL差込必須",
         trigger_type="tag_added",
         trigger_tag_id=TAG_AVATAR_GEN3,
     )
@@ -256,8 +256,8 @@ IGNITION 3日間チャレンジ
     # 第2世代229人。JSサミット①で水鏡GPTに関心を持っていた。
     # GPT→WEB→LINE→NASA級精度 という進化フレーミングで教育。
     sid, sql = make_scenario(
-        name="gw_gen2_evolution",
-        description="第2世代 水鏡GPT希望者(JSサミット①)229人へ進化フレーミング教育。5/12 12:00→12:30",
+        name="🟢06｜5/12 第2世代 229人 → 進化教育",
+        description="[自動発火] 2通 (12:00→12:30)。JSサミット①の水鏡GPT希望者へ。GPT→WEB→LINE進化フレーミング。最大母数229人",
         trigger_type="tag_added",
         trigger_tag_id=TAG_JS_SUMMIT_GEN2,
     )
@@ -291,8 +291,8 @@ NASA級精度まで高めました。
     # 5人のみ。TikTokコンサル等の最初期からの関係者。
     # 子竜が手動で個別カスタマイズして送る。テンプレートに[カスタマイズ]プレースホルダー付き。
     sid, sql = make_scenario(
-        name="gw_gen1_vip_1on1",
-        description="第1世代VIP 5人へ個別1on1 ZOOM 30分(¥300万コンサル誘導)。「俺」一人称(子竜指示)。子竜が手動カスタマイズして送る。5/12 14:00 順次",
+        name="⚡07｜5/12 VIP直DM 最古参 5人 → ZOOM30分招待",
+        description="[要カスタマイズ＋手動] 5人それぞれに「俺」一人称＋個別エピソードを手書きで追加して送る。5/12 14:00 順次。¥300万コンサルへの布石",
         trigger_type="manual",
         trigger_tag_id=None,
     )
@@ -342,8 +342,8 @@ ZOOMで、いつ空いてますか？
     # 第1世代残り15人。TikTok集客でずっとLINEに残ってくれている人。
     # 「ここまで信じてくれていたあなたに、今の私が作ったものを見てほしい」。
     sid, sql = make_scenario(
-        name="gw_gen1_remaining_step",
-        description="第1世代残り TikTok集客15人へ専用ステップ配信。5/12 19:00→19:30",
+        name="🟢08｜5/12 TikTok古参 15人 → 進化動画",
+        description="[自動発火] 2通 (19:00→19:30)。TikTokコンサル経由で最初期から残ってる人へ。ずっと信じてくれていた文脈",
         trigger_type="tag_added",
         trigger_tag_id=TAG_TIKTOK_GEN1,
     )
@@ -379,8 +379,8 @@ TikTok の頃から信じてくれてるあなたに、
     # ==================== シナリオ 9: gw_global_reminder_d-1 ====================
     # 全層broadcast。チャレンジ前日リマインド。シンプル・力強く。
     sid, sql = make_scenario(
-        name="gw_global_reminder_d-1",
-        description="全層リマインド (5/14 チャレンジ前日)。manual で全友達へ broadcast 一括 enroll",
+        name="🔴09｜5/14 全員 → チャレンジ前日リマインド",
+        description="[手動Enroll必須] 全友達に一括broadcast。5/14 当日に手動で全員をこのシナリオに登録する。1通のみ",
         trigger_type="manual",
         trigger_tag_id=None,
     )
@@ -402,8 +402,8 @@ TikTok の頃から信じてくれてるあなたに、
     # ==================== シナリオ 10: gw_global_summit_announce ====================
     # 全層broadcast。サミット前日(5/16)+Day3告知。
     sid, sql = make_scenario(
-        name="gw_global_summit_announce",
-        description="全層リマインド (5/16 サミット5/17告知 + Day3告知)。manual で全友達へ broadcast",
+        name="🔴10｜5/16 全員 → サミット翌日＋Day3告知",
+        description="[手動Enroll必須] 全友達に一括broadcast。5/16 当日手動登録。サミット(5/17)とDay3(5/17 21:00)の両方を告知",
         trigger_type="manual",
         trigger_tag_id=None,
     )
@@ -426,8 +426,8 @@ TikTok の頃から信じてくれてるあなたに、
     # サミット直後の熱量を活かして水鏡体験へ誘導。
     # 7体系宿命語彙で「あなたの核がある」という世界観を先に見せる。
     sid, sql = make_scenario(
-        name="gw_5gen_post_summit",
-        description="第5世代(サミット参加・水鏡未体験) + 水鏡_未着手107人へ7体系宿命語彙誘導。5/18 サミット直後",
+        name="🟢11｜5/18 水鏡_未着手 107人 → 水鏡体験誘導",
+        description="[自動発火] 3通 (0min→30min→翌日)。サミット熱量を活かして水鏡へ誘導。5次元解説 → 翌日チャレンジCTA",
         trigger_type="tag_added",
         trigger_tag_id=TAG_NOT_STARTED,
     )
@@ -474,8 +474,8 @@ TikTok の頃から信じてくれてるあなたに、
     # チャレンジを見て気になっているのに、行動できていない人への一押し。
     # 「審査」フレーミングで、申し込む側ではなく選ばれる側として提示する。
     sid, sql = make_scenario(
-        name="gw_assessment_unbooked",
-        description="個別審査未予約者へSoul-resonant再宣言。5/24 manual で動的に該当者を抽出して enroll",
+        name="🔴12｜5/24 動的 → 審査未予約へ最後の誘導",
+        description="[手動Enroll必須・動的] チャレンジ参加者のうち個別審査を予約していない人を抽出して手動登録。5/24。締切は5/25 23:59",
         trigger_type="manual",
         trigger_tag_id=None,
     )
@@ -512,8 +512,8 @@ TikTok の頃から信じてくれてるあなたに、
     # 「タイミング」という言葉で責めずに、小さな入り口を用意する。
     # 分身AI講座の入り口として、最初の3日間体験を提供する。
     sid, sql = make_scenario(
-        name="gw_ignition_downsell",
-        description="個別審査不参加者へIGNITION ¥9,800ダウンセル。5/26 manual で動的に enroll",
+        name="🔴13｜5/26 動的 → 審査不参加へIGNITION ¥9,800",
+        description="[手動Enroll必須・動的] 個別審査に不参加だった人を抽出して手動登録。5/26。IGNITION申込URLと5/31締切を告知",
         trigger_type="manual",
         trigger_tag_id=None,
     )
