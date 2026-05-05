@@ -7,9 +7,10 @@ GW明け挽回キャンペーン 13シナリオを D1 に SEED するスクリ�
   python3 scripts/seed-gw-recovery-scenarios.py > /tmp/gw_seed.sql
   npx wrangler d1 execute line-harness-db --remote --file=/tmp/gw_seed.sql
 
-正本: Notion 🚀 GW明け挽回キャンペーン 2026-05 SSOT
+正本: docs/campaigns/gw-recovery-2026-05.md (E案背景・戦略・採択経緯)
+スケジュール実行値: 下記 CAMPAIGN_SCHEDULE dict — git commit が変更履歴 = SSOT
 コンセプト土台: 分身AI講座 コンセプトシート v3.1 (Notion: 3562619c-6bd3-8158)
-タグID: 5/4 サマリー (3562619c-6bd3-81a5-8907-de7997495a13)
+タグID参照: 5/4 サマリー (3562619c-6bd3-81a5-8907-de7997495a13)
 
 Soul-resonantテンプレート変数:
   {{display_name}} / {{name}}
@@ -29,6 +30,38 @@ Soul-resonantテンプレート変数:
 import uuid
 import sys
 
+
+# ====== キャンペーンスケジュール（Config/Logic 分離 — 正本: docs/campaigns/gw-recovery-2026-05.md）======
+# 日程・価格を変更する場合はここだけ書き換えてgit commit。
+# メッセージ文字列内にもリテラルが残っている箇所はURL差込時に一括修正すること。
+CAMPAIGN_SCHEDULE = {
+    # チャレンジ LIVE 3日間
+    "challenge_day1": "5/20(火) 21:00",
+    "challenge_day1_theme": "WHY — なぜ今 分身AI なのか",
+    "challenge_day2": "5/21(水) 21:00",
+    "challenge_day2_theme": "WHAT — 分身AIは6つの部品でできている",
+    "challenge_day3": "5/22(木) 21:00",
+    "challenge_day3_theme": "HOW+BUY — 具体的な道筋 × 3階建て価格",
+    "challenge_range": "5/20-22",
+    # 個別審査
+    "assessment_period": "5/23-25",
+    "assessment_format": "ZOOM 15分",
+    "assessment_deadline": "5/25",
+    # 配信日（シナリオ別）
+    "send_s01": "5/9",
+    "send_s02_s03": "5/10",
+    "send_s04_s05": "5/11",
+    "send_s06_s07_s08": "5/12",
+    "send_s09": "5/14",
+    "send_s10": "5/16",
+    "send_s11": "5/18",
+    "send_s12": "5/24",
+    "send_s13": "5/26",
+    # 価格
+    "price_main_course": "¥198,000",
+    "price_ignition": "¥9,800",
+    "ignition_deadline": "5/31",
+}
 
 # ====== タグ ID (D1 から取得済) ======
 TAG_MIZUKAGAMI_DONE = "242f9775-2019-45cd-a050-75295672c5aa"   # 水鏡_完了
