@@ -114,22 +114,22 @@ def main():
 
 「{{metadata.mizukagami_user_words_joined}}」
 そのエネルギーが、24時間休まずに届き続ける世界を、
-5/12-14 の3日間で設計します。
+5/20-22 の3日間で設計します。
 
 🚀 分身AI構築 3日間チャレンジ
 → [チャレンジ申込URL]"""))
     out.append(make_step(sid, 3, 780, """明日、本編です。
 
-Day 1 (5/12 火) 21:00 — Why
+Day 1 (5/20 火) 21:00 — Why
   なぜ今 分身AI なのか
 
-Day 2 (5/13 水) 21:00 — What
+Day 2 (5/21 水) 21:00 — What
   分身AIは6つの部品でできている
 
-Day 3 (5/14 木) 21:00 — How+Buy
+Day 3 (5/22 木) 21:00 — How+Buy
   具体的な道筋 × 3階建て価格
 
-個別審査 (5/16-18 ZOOM 15分) 準備しています。
+個別審査 (5/23-25 ZOOM 15分) 準備しています。
 
 {{metadata.soul_message}}"""))
     out.append("")
@@ -206,7 +206,7 @@ IGNITION 3日間チャレンジ
 
 🎥 進化告知 (3分)
 → [動画①URL]"""))
-    out.append(make_step(sid, 2, 30, """5/12 (火) から3日間。
+    out.append(make_step(sid, 2, 30, """5/20 (火) から3日間。
 「分身AI構築 LIVE」をやります。
 
 あの時、進めてくれたあなただからこそ、
@@ -240,7 +240,7 @@ IGNITION 3日間チャレンジ
 → [サミット動画URL]
 
 まずこれを見てもらえたら嬉しいです。"""))
-    out.append(make_step(sid, 2, 30, """そして 5/12 から3日間。
+    out.append(make_step(sid, 2, 30, """そして 5/20 から3日間。
 「分身AI構築 LIVE」。
 
 最初に信じてくれたあなたへの、
@@ -275,7 +275,7 @@ NASA級精度まで高めました。
 
 🎥 進化の全容
 → [動画①URL]"""))
-    out.append(make_step(sid, 2, 30, """5/12 (火) から3日間。
+    out.append(make_step(sid, 2, 30, """5/20 (火) から3日間。
 「分身AI構築 LIVE」
 
 あの時から信じてくれたあなただからこそ、
@@ -361,7 +361,7 @@ TikTok コンサルを受講してくれた頃から、
 → [動画①URL]
 
 これを見てくれたら、ちょっとうれしい。"""))
-    out.append(make_step(sid, 2, 30, """5/12 (火) から3日間チャレンジ。
+    out.append(make_step(sid, 2, 30, """5/20 (火) から3日間チャレンジ。
 5/17 (土) AIサミット、私も登壇します。
 
 あなたには、
@@ -386,9 +386,13 @@ TikTok の頃から信じてくれてるあなたに、
     )
     out.append(f"-- シナリオ 9: gw_global_reminder_d-1 (全層 5/14 チャレンジ前日)")
     out.append(sql)
-    out.append(make_step(sid, 1, 0, """明日、21:00から。
+    out.append(make_step(sid, 1, 0, """来週火曜、5/20 21:00から。
 
 「分身AI構築 3日間チャレンジ」開始します。
+
+Day 1 (5/20 火) 21:00 — Why
+Day 2 (5/21 水) 21:00 — What
+Day 3 (5/22 木) 21:00 — How+Buy
 
 3日間で、あなたの魂の核から、
 あなただけの分身AIを設計する旅。
