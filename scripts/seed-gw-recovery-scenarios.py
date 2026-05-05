@@ -119,7 +119,7 @@ def main():
     # user_words 3個verbatim + soul_name + innate_spiral + soul_message。
     sid, sql = make_scenario(
         name="🟢01｜5/9 水鏡完走 190人 → チャレンジ招待",
-        description="[自動発火] タグ付き次第 自動配信。3通 (19:00→21:00→翌8:00)。Soul-resonant: user_words×3 + soul_name + soul_message 使用。URL差込後に is_active=1 にする",
+        description="[自動発火 5/9] 3通 (19:00→21:00→翌8:00)。Soul-resonant: user_words×3 + soul_name + soul_message 使用。チャレンジ(5/20-22)案内。URL差込後に is_active=1 にする",
         trigger_type="tag_added",
         trigger_tag_id=TAG_MIZUKAGAMI_DONE,
     )
@@ -225,7 +225,7 @@ IGNITION 3日間チャレンジ
     # 進化フレーミングで「あの続きが、ここにある」と再開を促す。
     sid, sql = make_scenario(
         name="🟢04｜5/11 中盤離脱 64人 → 再開招待",
-        description="[自動発火] タグ付き次第 自動配信。2通 (19:00→19:30)。水鏡q2-q6で止まった人への進化告知＋チャレンジ案内",
+        description="[自動発火 5/11] 2通 (19:00→19:30)。水鏡q2-q6で止まった人への進化告知＋チャレンジ(5/20-22)案内",
         trigger_type="tag_added",
         trigger_tag_id=TAG_MID_DROPOUT,
     )
@@ -255,7 +255,7 @@ IGNITION 3日間チャレンジ
     # 謝罪 + サミット動画 + チャレンジ特別招待。
     sid, sql = make_scenario(
         name="🟢05｜5/11 第3世代 40人 → 謝罪＋サミット動画",
-        description="[自動発火] 2通 (21:00→21:30)。JSサミット②で分身AI希望を示したのに何も届いていなかった人へ。サミット動画URL差込必須",
+        description="[自動発火 5/11] 2通 (21:00→21:30)。JSサミット②で分身AI希望を示したのに何も届いていなかった人へ。サミット動画URL差込必須",
         trigger_type="tag_added",
         trigger_tag_id=TAG_AVATAR_GEN3,
     )
@@ -289,7 +289,7 @@ IGNITION 3日間チャレンジ
     # GPT→WEB→LINE→NASA級精度 という進化フレーミングで教育。
     sid, sql = make_scenario(
         name="🟢06｜5/12 第2世代 229人 → 進化教育",
-        description="[自動発火] 2通 (12:00→12:30)。JSサミット①の水鏡GPT希望者へ。GPT→WEB→LINE進化フレーミング。最大母数229人",
+        description="[自動発火 5/12] 2通 (12:00→12:30)。JSサミット①の水鏡GPT希望者へ。GPT→WEB→LINE進化フレーミング。最大母数229人",
         trigger_type="tag_added",
         trigger_tag_id=TAG_JS_SUMMIT_GEN2,
     )
@@ -375,7 +375,7 @@ ZOOMで、いつ空いてますか？
     # 「ここまで信じてくれていたあなたに、今の私が作ったものを見てほしい」。
     sid, sql = make_scenario(
         name="🟢08｜5/12 TikTok古参 15人 → 進化動画",
-        description="[自動発火] 2通 (19:00→19:30)。TikTokコンサル経由で最初期から残ってる人へ。ずっと信じてくれていた文脈",
+        description="[自動発火 5/12] 2通 (19:00→19:30)。TikTokコンサル経由で最初期から残ってる人へ。ずっと信じてくれていた文脈",
         trigger_type="tag_added",
         trigger_tag_id=TAG_TIKTOK_GEN1,
     )
@@ -409,10 +409,10 @@ TikTok の頃から信じてくれてるあなたに、
     out.append("")
 
     # ==================== シナリオ 9: gw_global_reminder_d-1 ====================
-    # 全層broadcast。チャレンジ前日リマインド。シンプル・力強く。
+    # 全層broadcast。チャレンジ1週間前(D-6)リマインド。シンプル・力強く。チャレンジ: 5/20-22
     sid, sql = make_scenario(
-        name="🔴09｜5/14 全員 → チャレンジ前日リマインド",
-        description="[手動Enroll必須] 全友達に一括broadcast。5/14 当日に手動で全員をこのシナリオに登録する。1通のみ",
+        name="🔴09｜5/14 全員 → チャレンジ1週間前リマインド(5/20-22)",
+        description="[手動Enroll必須] 全友達に一括broadcast。5/14 当日に手動で全員をこのシナリオに登録する。1通のみ。チャレンジは5/20(火)-22(木) 21:00",
         trigger_type="manual",
         trigger_tag_id=None,
     )
@@ -436,10 +436,10 @@ Day 3 (5/22 木) 21:00 — How+Buy
     out.append("")
 
     # ==================== シナリオ 10: gw_global_summit_announce ====================
-    # 全層broadcast。サミット前日(5/16)+Day3告知。
+    # 全層broadcast。5/16配信。サミット(5/17)前日告知 + チャレンジ(5/20-22)案内。
     sid, sql = make_scenario(
-        name="🔴10｜5/16 全員 → サミット翌日＋Day3告知",
-        description="[手動Enroll必須] 全友達に一括broadcast。5/16 当日手動登録。サミット(5/17)とDay3(5/17 21:00)の両方を告知",
+        name="🔴10｜5/16 全員 → サミット前日告知＋チャレンジ(5/20-22)案内",
+        description="[手動Enroll必須] 全友達に一括broadcast。5/16 当日手動登録。サミット(5/17)とチャレンジ開始(5/20 Day1〜5/22 Day3)の両方を告知",
         trigger_type="manual",
         trigger_tag_id=None,
     )
@@ -451,7 +451,11 @@ Day 3 (5/22 木) 21:00 — How+Buy
 
 → [サミット視聴URL]
 
-そして同日 21:00、チャレンジ最終日 Day 3。
+そして 5/20 (火) から3日間チャレンジが始まります。
+
+Day 1 (5/20 火) 21:00 — Why
+Day 2 (5/21 水) 21:00 — What
+Day 3 (5/22 木) 21:00 — How+Buy
 
 価格と道筋を、全部出します。
 一緒に、見ましょう。"""))
@@ -463,7 +467,7 @@ Day 3 (5/22 木) 21:00 — How+Buy
     # 7体系宿命語彙で「あなたの核がある」という世界観を先に見せる。
     sid, sql = make_scenario(
         name="🟢11｜5/18 水鏡_未着手 107人 → 水鏡体験誘導",
-        description="[自動発火] 3通 (0min→30min→翌日)。サミット熱量を活かして水鏡へ誘導。5次元解説 → 翌日チャレンジCTA",
+        description="[自動発火 5/18] 3通 (0min→30min→翌日)。サミット(5/17)熱量を活かして水鏡へ誘導。5次元解説 → 翌日チャレンジCTA(5/20〜)",
         trigger_type="tag_added",
         trigger_tag_id=TAG_NOT_STARTED,
     )
