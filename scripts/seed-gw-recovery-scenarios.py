@@ -7,10 +7,9 @@ GW明け挽回キャンペーン 13シナリオを D1 に SEED するスクリ�
   python3 scripts/seed-gw-recovery-scenarios.py > /tmp/gw_seed.sql
   npx wrangler d1 execute line-harness-db --remote --file=/tmp/gw_seed.sql
 
-正本: docs/campaigns/gw-recovery-2026-05.md (E案背景・戦略・採択経緯)
-スケジュール実行値: 下記 CAMPAIGN_SCHEDULE dict — git commit が変更履歴 = SSOT
+E案スケジュール正本: 下記 CAMPAIGN_SCHEDULE dict — git commit が変更履歴 = Audit Trail
+戦略背景: チャレンジ5/20-22に設定。配信期間(5/9-5/18)でリード温め → LIVE → 個別審査の設計
 コンセプト土台: 分身AI講座 コンセプトシート v3.1 (Notion: 3562619c-6bd3-8158)
-タグID参照: 5/4 サマリー (3562619c-6bd3-81a5-8907-de7997495a13)
 
 Soul-resonantテンプレート変数:
   {{display_name}} / {{name}}
