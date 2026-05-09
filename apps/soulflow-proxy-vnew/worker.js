@@ -64,19 +64,23 @@ function mapIncomingToIqbEntry(incoming) {
     pick(incoming, "user_id", "userId") ?? pick(p, "sheetId", "sheet_id");
 
   // --- week_number: 旧フォーマット優先、新フォーマットでは parameters.week ---
+  // "Week4_世界観" のような文字列から数値を抽出する (/\d+/ で先頭数字列を取得)
   const week_number_raw =
     pick(incoming, "week_number", "weekNumber", "week") ?? pick(p, "week");
   const week_number =
     week_number_raw !== undefined
       ? typeof week_number_raw === "string"
-        ? parseInt(week_number_raw, 10)
+        ? parseInt(week_number_raw.match(/\d+/)?.[0] ?? "", 10)
         : week_number_raw
       : undefined;
 
-  // --- week_label: 旧フォーマット優先、新フォーマットでは "Week N" として導出 ---
+  // --- week_label: 旧フォーマット優先、新フォーマットでは parameters.week をそのまま使用 ---
   const week_label =
     pick(incoming, "week_label", "weekLabel") ??
-    (week_number !== undefined ? `Week ${week_number}` : undefined);
+    pick(p, "week") ??
+    (week_number !== undefined && !isNaN(week_number)
+      ? `Week ${week_number}`
+      : undefined);
 
   // --- entry_data: 旧フォーマット優先、新フォーマットでは parameters 全体 ---
   const entry_data =
@@ -158,7 +162,10 @@ function mapIncomingToSoulMemory(incoming) {
 
   return {
     sheet_id,
-    week: typeof week === "string" ? parseInt(week, 10) : week,
+    week:
+      typeof week === "string"
+        ? parseInt(week.match(/\d+/)?.[0] ?? "", 10)
+        : week,
     row_number:
       typeof row_number === "string" ? parseInt(row_number, 10) : row_number,
     meaning: pick(p, "意味", "meaning") ?? null,
@@ -400,15 +407,22 @@ export default {
           body: JSON.stringify(incoming),
         });
 
-        gasOk = resp.ok;
         const ct = resp.headers.get("content-type") || "";
         if (ct.includes("application/json")) {
           gasPayload = await resp.json();
+          // GAS は HTTP 200 で JSON を返すが、内部 status が 4xx/5xx の場合は失敗扱い
+          gasOk = resp.ok && (gasPayload?.status ?? 200) < 400;
         } else {
+          // GAS が HTML エラーページを返した場合（権限エラー等）
+          const rawText = await resp.text();
           gasPayload = {
-            status: resp.status,
-            body: { raw: await resp.text() },
+            status: 403,
+            body: {
+              error: "GAS returned non-JSON response (permission error?)",
+              raw: rawText.slice(0, 500),
+            },
           };
+          gasOk = false;
         }
 
         if (typeof gasPayload?.body !== "object") {
@@ -426,15 +440,19 @@ export default {
 
       // GAS 成功時のみ Supabase 書き込みに進む (既存動作維持)
       if (gasOk) {
-        // (2) iqb_entries UPSERT (legacy, best-effort) — 旧フォーマット payload 用
-        try {
-          const iqbResult = await upsertIqbEntry(env, incoming);
-          gasPayload.body = { ...(gasPayload.body ?? {}), iqb: iqbResult };
-        } catch (e) {
-          gasPayload.body = {
-            ...(gasPayload.body ?? {}),
-            iqb: { ok: false, error: String(e) },
-          };
+        // (2) iqb_entries UPSERT (legacy, best-effort) — 旧フォーマット payload 専用
+        // 新フォーマット (action: sendToSoulSheet) は soul_memories が正本のため skip
+        const isNewFormat = incoming?.action === "sendToSoulSheet";
+        if (!isNewFormat) {
+          try {
+            const iqbResult = await upsertIqbEntry(env, incoming);
+            gasPayload.body = { ...(gasPayload.body ?? {}), iqb: iqbResult };
+          } catch (e) {
+            gasPayload.body = {
+              ...(gasPayload.body ?? {}),
+              iqb: { ok: false, error: String(e) },
+            };
+          }
         }
 
         // (3) Two-Track soul_memories dual-write

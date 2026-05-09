@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono } from "hono";
 import {
   getScenarios,
   getScenarioById,
@@ -9,8 +9,9 @@ import {
   updateScenarioStep,
   deleteScenarioStep,
   enrollFriendInScenario,
+  enrollFriendInScenarioExclusive,
   getFriendById,
-} from '@line-crm/db';
+} from "@line-crm/db";
 import type {
   Scenario as DbScenario,
   ScenarioWithStepCount as DbScenarioWithStepCount,
@@ -18,8 +19,8 @@ import type {
   FriendScenario as DbFriendScenario,
   ScenarioTriggerType,
   MessageType,
-} from '@line-crm/db';
-import type { Env } from '../index.js';
+} from "@line-crm/db";
+import type { Env } from "../index.js";
 
 const scenarios = new Hono<Env>();
 
@@ -68,20 +69,19 @@ function serializeFriendScenario(row: DbFriendScenario) {
 }
 
 // GET /api/scenarios - list all
-scenarios.get('/api/scenarios', async (c) => {
+scenarios.get("/api/scenarios", async (c) => {
   try {
-    const lineAccountId = c.req.query('lineAccountId');
+    const lineAccountId = c.req.query("lineAccountId");
     let items: DbScenarioWithStepCount[];
     if (lineAccountId) {
-      const result = await c.env.DB
-        .prepare(
-          `SELECT s.*, COUNT(ss.id) as step_count
+      const result = await c.env.DB.prepare(
+        `SELECT s.*, COUNT(ss.id) as step_count
            FROM scenarios s
            LEFT JOIN scenario_steps ss ON s.id = ss.scenario_id
            WHERE s.line_account_id = ?
            GROUP BY s.id
            ORDER BY s.created_at DESC`,
-        )
+      )
         .bind(lineAccountId)
         .all<DbScenarioWithStepCount>();
       items = result.results;
@@ -96,19 +96,19 @@ scenarios.get('/api/scenarios', async (c) => {
       })),
     });
   } catch (err) {
-    console.error('GET /api/scenarios error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    console.error("GET /api/scenarios error:", err);
+    return c.json({ success: false, error: "Internal server error" }, 500);
   }
 });
 
 // GET /api/scenarios/:id - get with steps
-scenarios.get('/api/scenarios/:id', async (c) => {
+scenarios.get("/api/scenarios/:id", async (c) => {
   try {
-    const id = c.req.param('id');
+    const id = c.req.param("id");
     const scenario = await getScenarioById(c.env.DB, id);
 
     if (!scenario) {
-      return c.json({ success: false, error: 'Scenario not found' }, 404);
+      return c.json({ success: false, error: "Scenario not found" }, 404);
     }
 
     return c.json({
@@ -119,13 +119,13 @@ scenarios.get('/api/scenarios/:id', async (c) => {
       },
     });
   } catch (err) {
-    console.error('GET /api/scenarios/:id error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    console.error("GET /api/scenarios/:id error:", err);
+    return c.json({ success: false, error: "Internal server error" }, 500);
   }
 });
 
 // POST /api/scenarios - create
-scenarios.post('/api/scenarios', async (c) => {
+scenarios.post("/api/scenarios", async (c) => {
   try {
     const body = await c.req.json<{
       name: string;
@@ -137,7 +137,10 @@ scenarios.post('/api/scenarios', async (c) => {
     }>();
 
     if (!body.name || !body.triggerType) {
-      return c.json({ success: false, error: 'name and triggerType are required' }, 400);
+      return c.json(
+        { success: false, error: "name and triggerType are required" },
+        400,
+      );
     }
 
     let scenario = await createScenario(c.env.DB, {
@@ -149,27 +152,32 @@ scenarios.post('/api/scenarios', async (c) => {
 
     // Save line_account_id if provided
     if (body.lineAccountId) {
-      await c.env.DB.prepare(`UPDATE scenarios SET line_account_id = ? WHERE id = ?`)
-        .bind(body.lineAccountId, scenario.id).run();
+      await c.env.DB.prepare(
+        `UPDATE scenarios SET line_account_id = ? WHERE id = ?`,
+      )
+        .bind(body.lineAccountId, scenario.id)
+        .run();
     }
 
     // createScenario() always sets is_active=1; override if the caller requested inactive
     if (body.isActive === false) {
-      const updated = await updateScenario(c.env.DB, scenario.id, { is_active: 0 });
+      const updated = await updateScenario(c.env.DB, scenario.id, {
+        is_active: 0,
+      });
       if (updated) scenario = updated;
     }
 
     return c.json({ success: true, data: serializeScenario(scenario) }, 201);
   } catch (err) {
-    console.error('POST /api/scenarios error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    console.error("POST /api/scenarios error:", err);
+    return c.json({ success: false, error: "Internal server error" }, 500);
   }
 });
 
 // PUT /api/scenarios/:id - update (accepts camelCase fields from clients)
-scenarios.put('/api/scenarios/:id', async (c) => {
+scenarios.put("/api/scenarios/:id", async (c) => {
   try {
-    const id = c.req.param('id');
+    const id = c.req.param("id");
     const body = await c.req.json<{
       name?: string;
       description?: string | null;
@@ -183,36 +191,37 @@ scenarios.put('/api/scenarios/:id', async (c) => {
       description: body.description,
       trigger_type: body.triggerType,
       trigger_tag_id: body.triggerTagId,
-      is_active: body.isActive !== undefined ? (body.isActive ? 1 : 0) : undefined,
+      is_active:
+        body.isActive !== undefined ? (body.isActive ? 1 : 0) : undefined,
     });
 
     if (!updated) {
-      return c.json({ success: false, error: 'Scenario not found' }, 404);
+      return c.json({ success: false, error: "Scenario not found" }, 404);
     }
 
     return c.json({ success: true, data: serializeScenario(updated) });
   } catch (err) {
-    console.error('PUT /api/scenarios/:id error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    console.error("PUT /api/scenarios/:id error:", err);
+    return c.json({ success: false, error: "Internal server error" }, 500);
   }
 });
 
 // DELETE /api/scenarios/:id - delete
-scenarios.delete('/api/scenarios/:id', async (c) => {
+scenarios.delete("/api/scenarios/:id", async (c) => {
   try {
-    const id = c.req.param('id');
+    const id = c.req.param("id");
     await deleteScenario(c.env.DB, id);
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('DELETE /api/scenarios/:id error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    console.error("DELETE /api/scenarios/:id error:", err);
+    return c.json({ success: false, error: "Internal server error" }, 500);
   }
 });
 
 // POST /api/scenarios/:id/steps - add step
-scenarios.post('/api/scenarios/:id/steps', async (c) => {
+scenarios.post("/api/scenarios/:id/steps", async (c) => {
   try {
-    const scenarioId = c.req.param('id');
+    const scenarioId = c.req.param("id");
     const body = await c.req.json<{
       stepOrder: number;
       delayMinutes?: number;
@@ -223,9 +232,16 @@ scenarios.post('/api/scenarios/:id/steps', async (c) => {
       nextStepOnFalse?: number | null;
     }>();
 
-    if (body.stepOrder === undefined || !body.messageType || !body.messageContent) {
+    if (
+      body.stepOrder === undefined ||
+      !body.messageType ||
+      !body.messageContent
+    ) {
       return c.json(
-        { success: false, error: 'stepOrder, messageType, and messageContent are required' },
+        {
+          success: false,
+          error: "stepOrder, messageType, and messageContent are required",
+        },
         400,
       );
     }
@@ -243,15 +259,15 @@ scenarios.post('/api/scenarios/:id/steps', async (c) => {
 
     return c.json({ success: true, data: serializeStep(step) }, 201);
   } catch (err) {
-    console.error('POST /api/scenarios/:id/steps error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    console.error("POST /api/scenarios/:id/steps error:", err);
+    return c.json({ success: false, error: "Internal server error" }, 500);
   }
 });
 
 // PUT /api/scenarios/:id/steps/:stepId - update step (accepts camelCase)
-scenarios.put('/api/scenarios/:id/steps/:stepId', async (c) => {
+scenarios.put("/api/scenarios/:id/steps/:stepId", async (c) => {
   try {
-    const stepId = c.req.param('stepId');
+    const stepId = c.req.param("stepId");
     const body = await c.req.json<{
       stepOrder?: number;
       delayMinutes?: number;
@@ -273,33 +289,33 @@ scenarios.put('/api/scenarios/:id/steps/:stepId', async (c) => {
     });
 
     if (!updated) {
-      return c.json({ success: false, error: 'Step not found' }, 404);
+      return c.json({ success: false, error: "Step not found" }, 404);
     }
 
     return c.json({ success: true, data: serializeStep(updated) });
   } catch (err) {
-    console.error('PUT /api/scenarios/:id/steps/:stepId error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    console.error("PUT /api/scenarios/:id/steps/:stepId error:", err);
+    return c.json({ success: false, error: "Internal server error" }, 500);
   }
 });
 
 // DELETE /api/scenarios/:id/steps/:stepId - delete step
-scenarios.delete('/api/scenarios/:id/steps/:stepId', async (c) => {
+scenarios.delete("/api/scenarios/:id/steps/:stepId", async (c) => {
   try {
-    const stepId = c.req.param('stepId');
+    const stepId = c.req.param("stepId");
     await deleteScenarioStep(c.env.DB, stepId);
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('DELETE /api/scenarios/:id/steps/:stepId error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    console.error("DELETE /api/scenarios/:id/steps/:stepId error:", err);
+    return c.json({ success: false, error: "Internal server error" }, 500);
   }
 });
 
 // POST /api/scenarios/:id/enroll/:friendId - manually enroll friend
-scenarios.post('/api/scenarios/:id/enroll/:friendId', async (c) => {
+scenarios.post("/api/scenarios/:id/enroll/:friendId", async (c) => {
   try {
-    const scenarioId = c.req.param('id');
-    const friendId = c.req.param('friendId');
+    const scenarioId = c.req.param("id");
+    const friendId = c.req.param("friendId");
     const db = c.env.DB;
 
     // Verify both exist
@@ -309,17 +325,29 @@ scenarios.post('/api/scenarios/:id/enroll/:friendId', async (c) => {
     ]);
 
     if (!scenario) {
-      return c.json({ success: false, error: 'Scenario not found' }, 404);
+      return c.json({ success: false, error: "Scenario not found" }, 404);
     }
     if (!friend) {
-      return c.json({ success: false, error: 'Friend not found' }, 404);
+      return c.json({ success: false, error: "Friend not found" }, 404);
     }
 
-    const enrollment = await enrollFriendInScenario(db, friendId, scenarioId);
-    return c.json({ success: true, data: serializeFriendScenario(enrollment) }, 201);
+    // ?exclusive=<prefix> completes same-type active scenarios before enrolling
+    const exclusivePrefix = c.req.query("exclusive");
+    const enrollment = exclusivePrefix
+      ? await enrollFriendInScenarioExclusive(
+          db,
+          friendId,
+          scenarioId,
+          exclusivePrefix,
+        )
+      : await enrollFriendInScenario(db, friendId, scenarioId);
+    return c.json(
+      { success: true, data: serializeFriendScenario(enrollment) },
+      201,
+    );
   } catch (err) {
-    console.error('POST /api/scenarios/:id/enroll/:friendId error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    console.error("POST /api/scenarios/:id/enroll/:friendId error:", err);
+    return c.json({ success: false, error: "Internal server error" }, 500);
   }
 });
 

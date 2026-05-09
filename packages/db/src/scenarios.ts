@@ -1,7 +1,7 @@
-import { jstNow } from './utils.js';
-export type ScenarioTriggerType = 'friend_add' | 'tag_added' | 'manual';
-export type MessageType = 'text' | 'image' | 'flex';
-export type FriendScenarioStatus = 'active' | 'paused' | 'completed';
+import { jstNow } from "./utils.js";
+export type ScenarioTriggerType = "friend_add" | "tag_added" | "manual";
+export type MessageType = "text" | "image" | "flex";
+export type FriendScenarioStatus = "active" | "paused" | "completed";
 
 export interface Scenario {
   id: string;
@@ -49,7 +49,9 @@ export interface FriendScenario {
 
 export type ScenarioWithStepCount = Scenario & { step_count: number };
 
-export async function getScenarios(db: D1Database): Promise<ScenarioWithStepCount[]> {
+export async function getScenarios(
+  db: D1Database,
+): Promise<ScenarioWithStepCount[]> {
   const result = await db
     .prepare(
       `SELECT s.*, COUNT(ss.id) as step_count
@@ -120,7 +122,10 @@ export async function createScenario(
 }
 
 export type UpdateScenarioInput = Partial<
-  Pick<Scenario, 'name' | 'description' | 'trigger_type' | 'trigger_tag_id' | 'is_active'>
+  Pick<
+    Scenario,
+    "name" | "description" | "trigger_type" | "trigger_tag_id" | "is_active"
+  >
 >;
 
 export async function updateScenario(
@@ -133,23 +138,23 @@ export async function updateScenario(
   const values: unknown[] = [];
 
   if (updates.name !== undefined) {
-    fields.push('name = ?');
+    fields.push("name = ?");
     values.push(updates.name);
   }
   if (updates.description !== undefined) {
-    fields.push('description = ?');
+    fields.push("description = ?");
     values.push(updates.description);
   }
   if (updates.trigger_type !== undefined) {
-    fields.push('trigger_type = ?');
+    fields.push("trigger_type = ?");
     values.push(updates.trigger_type);
   }
   if (updates.trigger_tag_id !== undefined) {
-    fields.push('trigger_tag_id = ?');
+    fields.push("trigger_tag_id = ?");
     values.push(updates.trigger_tag_id);
   }
   if (updates.is_active !== undefined) {
-    fields.push('is_active = ?');
+    fields.push("is_active = ?");
     values.push(updates.is_active);
   }
 
@@ -160,12 +165,12 @@ export async function updateScenario(
       .first<Scenario>();
   }
 
-  fields.push('updated_at = ?');
+  fields.push("updated_at = ?");
   values.push(now);
   values.push(id);
 
   await db
-    .prepare(`UPDATE scenarios SET ${fields.join(', ')} WHERE id = ?`)
+    .prepare(`UPDATE scenarios SET ${fields.join(", ")} WHERE id = ?`)
     .bind(...values)
     .run();
 
@@ -175,7 +180,10 @@ export async function updateScenario(
     .first<Scenario>();
 }
 
-export async function deleteScenario(db: D1Database, id: string): Promise<void> {
+export async function deleteScenario(
+  db: D1Database,
+  id: string,
+): Promise<void> {
   await db.prepare(`DELETE FROM scenarios WHERE id = ?`).bind(id).run();
 }
 
@@ -227,7 +235,16 @@ export async function createScenarioStep(
 }
 
 export type UpdateScenarioStepInput = Partial<
-  Pick<ScenarioStep, 'step_order' | 'delay_minutes' | 'message_type' | 'message_content' | 'condition_type' | 'condition_value' | 'next_step_on_false'>
+  Pick<
+    ScenarioStep,
+    | "step_order"
+    | "delay_minutes"
+    | "message_type"
+    | "message_content"
+    | "condition_type"
+    | "condition_value"
+    | "next_step_on_false"
+  >
 >;
 
 export async function updateScenarioStep(
@@ -239,38 +256,38 @@ export async function updateScenarioStep(
   const values: unknown[] = [];
 
   if (updates.step_order !== undefined) {
-    fields.push('step_order = ?');
+    fields.push("step_order = ?");
     values.push(updates.step_order);
   }
   if (updates.delay_minutes !== undefined) {
-    fields.push('delay_minutes = ?');
+    fields.push("delay_minutes = ?");
     values.push(updates.delay_minutes);
   }
   if (updates.message_type !== undefined) {
-    fields.push('message_type = ?');
+    fields.push("message_type = ?");
     values.push(updates.message_type);
   }
   if (updates.message_content !== undefined) {
-    fields.push('message_content = ?');
+    fields.push("message_content = ?");
     values.push(updates.message_content);
   }
   if (updates.condition_type !== undefined) {
-    fields.push('condition_type = ?');
+    fields.push("condition_type = ?");
     values.push(updates.condition_type);
   }
   if (updates.condition_value !== undefined) {
-    fields.push('condition_value = ?');
+    fields.push("condition_value = ?");
     values.push(updates.condition_value);
   }
   if (updates.next_step_on_false !== undefined) {
-    fields.push('next_step_on_false = ?');
+    fields.push("next_step_on_false = ?");
     values.push(updates.next_step_on_false);
   }
 
   if (fields.length > 0) {
     values.push(id);
     await db
-      .prepare(`UPDATE scenario_steps SET ${fields.join(', ')} WHERE id = ?`)
+      .prepare(`UPDATE scenario_steps SET ${fields.join(", ")} WHERE id = ?`)
       .bind(...values)
       .run();
   }
@@ -281,7 +298,10 @@ export async function updateScenarioStep(
     .first<ScenarioStep>();
 }
 
-export async function deleteScenarioStep(db: D1Database, id: string): Promise<void> {
+export async function deleteScenarioStep(
+  db: D1Database,
+  id: string,
+): Promise<void> {
   await db.prepare(`DELETE FROM scenario_steps WHERE id = ?`).bind(id).run();
 }
 
@@ -334,14 +354,16 @@ export async function enrollFriendInScenario(
       .first<FriendScenario>())!;
   }
 
-  const rawDate = new Date(Date.now() + 9 * 60 * 60_000 + firstStep.delay_minutes * 60_000);
+  const rawDate = new Date(
+    Date.now() + 9 * 60 * 60_000 + firstStep.delay_minutes * 60_000,
+  );
   // Enforce 9:00-21:00 JST delivery window
   const hours = rawDate.getUTCHours();
   if (hours < 9 || hours >= 21) {
     if (hours >= 21) rawDate.setUTCDate(rawDate.getUTCDate() + 1);
     rawDate.setUTCHours(9, 0, 0, 0);
   }
-  const nextDeliveryAt = rawDate.toISOString().slice(0, -1) + '+09:00';
+  const nextDeliveryAt = rawDate.toISOString().slice(0, -1) + "+09:00";
 
   await db
     .prepare(
@@ -355,6 +377,34 @@ export async function enrollFriendInScenario(
     .prepare(`SELECT * FROM friend_scenarios WHERE id = ?`)
     .bind(id)
     .first<FriendScenario>())!;
+}
+
+/**
+ * Enroll a friend in a scenario, first completing any existing active scenarios
+ * whose name starts with `exclusivePrefix`. Enforces One-Active-Per-Type invariant.
+ * Use this when a scenario type should have at most one active enrollment per friend
+ * (e.g. mizukagami_followup_).
+ */
+export async function enrollFriendInScenarioExclusive(
+  db: D1Database,
+  friendId: string,
+  scenarioId: string,
+  exclusivePrefix: string,
+): Promise<FriendScenario> {
+  const now = jstNow();
+  await db
+    .prepare(
+      `UPDATE friend_scenarios
+       SET status = 'completed', next_delivery_at = NULL, updated_at = ?
+       WHERE friend_id = ?
+         AND status = 'active'
+         AND scenario_id IN (
+           SELECT id FROM scenarios WHERE name LIKE ?
+         )`,
+    )
+    .bind(now, friendId, `${exclusivePrefix}%`)
+    .run();
+  return enrollFriendInScenario(db, friendId, scenarioId);
 }
 
 export async function getFriendScenariosDueForDelivery(
@@ -375,7 +425,11 @@ export async function getFriendScenariosDueForDelivery(
   const nowMs = new Date(now).getTime();
   return result.results
     .filter((fs) => new Date(fs.next_delivery_at!).getTime() <= nowMs)
-    .sort((a, b) => new Date(a.next_delivery_at!).getTime() - new Date(b.next_delivery_at!).getTime());
+    .sort(
+      (a, b) =>
+        new Date(a.next_delivery_at!).getTime() -
+        new Date(b.next_delivery_at!).getTime(),
+    );
 }
 
 export async function advanceFriendScenario(
