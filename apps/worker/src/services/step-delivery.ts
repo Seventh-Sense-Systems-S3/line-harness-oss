@@ -150,14 +150,27 @@ export async function processStepDeliveries(
   const now = jstNow();
   const dueFriendScenarios = await getFriendScenariosDueForDelivery(db, now);
 
+  // One-per-friend-per-cron-run guard: if multiple scenarios are due for the same
+  // friend simultaneously, send only the earliest-due one and let the next cron
+  // pick up the rest. Prevents burst sends when One-Active-Per-Type invariant is
+  // temporarily violated or scenarios coincide.
+  const sentFriendIds = new Set<string>();
+
   for (let i = 0; i < dueFriendScenarios.length; i++) {
     const fs = dueFriendScenarios[i];
+    if (sentFriendIds.has(fs.friend_id)) {
+      console.log(
+        `[step-delivery] skipping friend_scenario ${fs.id} — already sent to friend ${fs.friend_id} this cron run`,
+      );
+      continue;
+    }
     try {
       // Stealth: add small random delay between deliveries to avoid burst patterns
       if (i > 0) {
         await sleep(addJitter(50, 200));
       }
       await processSingleDelivery(db, lineClient, fs, workerUrl);
+      sentFriendIds.add(fs.friend_id);
     } catch (err) {
       console.error(`Error processing friend_scenario ${fs.id}:`, err);
       // Continue with next one

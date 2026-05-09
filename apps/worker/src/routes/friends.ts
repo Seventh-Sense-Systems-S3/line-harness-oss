@@ -6,8 +6,6 @@ import {
   addTagToFriend,
   removeTagFromFriend,
   getFriendTags,
-  getScenarios,
-  enrollFriendInScenario,
   jstNow,
 } from "@line-crm/db";
 import type { Friend as DbFriend, Tag as DbTag } from "@line-crm/db";
@@ -229,25 +227,11 @@ friends.post("/api/friends/:id/tags", async (c) => {
     const db = c.env.DB;
     await addTagToFriend(db, friendId, body.tagId);
 
-    // Enroll in tag_added scenarios that match this tag
-    const allScenarios = await getScenarios(db);
-    for (const scenario of allScenarios) {
-      if (
-        scenario.trigger_type === "tag_added" &&
-        scenario.is_active &&
-        scenario.trigger_tag_id === body.tagId
-      ) {
-        const existing = await db
-          .prepare(
-            `SELECT id FROM friend_scenarios WHERE friend_id = ? AND scenario_id = ?`,
-          )
-          .bind(friendId, scenario.id)
-          .first();
-        if (!existing) {
-          await enrollFriendInScenario(db, friendId, scenario.id);
-        }
-      }
-    }
+    // Note: tag_added scenario enrollment is intentionally NOT triggered here.
+    // Enrollment is handled directly by the caller (e.g. relationship-engine)
+    // via POST /api/scenarios/:id/enroll/:friendId to enforce One-Active-Per-Type.
+    // Automatic enrollment caused all scenarios sharing the same trigger tag to
+    // fire simultaneously, resulting in spam (Enrollment Authority bug, fixed 2026-05-08).
 
     // イベントバス発火: tag_change
     await fireEvent(db, "tag_change", {
