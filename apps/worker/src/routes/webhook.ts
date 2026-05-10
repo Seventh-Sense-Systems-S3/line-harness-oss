@@ -126,6 +126,7 @@ webhook.post("/webhook", async (c) => {
           c.env.LIFF_URL,
           c.env.SUPABASE_URL,
           c.env.SUPABASE_SERVICE_ROLE_KEY,
+          c.env.OWNER_LINE_USER_ID,
         );
       } catch (err) {
         console.error("Error handling webhook event:", err);
@@ -151,6 +152,7 @@ async function handleEvent(
   liffUrl?: string,
   supabaseMizukagamiUrl?: string,
   supabaseMizukagamiServiceKey?: string,
+  ownerLineUserId?: string,
 ): Promise<void> {
   if (event.type === "follow") {
     const userId =
@@ -449,6 +451,50 @@ async function handleEvent(
     const userId =
       event.source.type === "user" ? event.source.userId : undefined;
     if (!userId) return;
+
+    // ─── Admin command: !fix {surface} {reading} ───
+    const msgText = textMessage.text;
+    const replyToken = (event as unknown as { replyToken?: string }).replyToken;
+    if (
+      ownerLineUserId &&
+      userId === ownerLineUserId &&
+      msgText.startsWith("!fix ") &&
+      replyToken
+    ) {
+      const parts = msgText.slice(5).trim().split(/\s+/);
+      const surface = parts[0];
+      const reading = parts.slice(1).join(" ");
+      if (surface && reading && supabaseMizukagamiUrl && supabaseMizukagamiServiceKey) {
+        try {
+          const resp = await fetch(
+            `${supabaseMizukagamiUrl}/rest/v1/tts_pronunciation_rules`,
+            {
+              method: "POST",
+              headers: {
+                apikey: supabaseMizukagamiServiceKey,
+                Authorization: `Bearer ${supabaseMizukagamiServiceKey}`,
+                "Content-Type": "application/json",
+                Prefer: "resolution=merge-duplicates",
+              },
+              body: JSON.stringify({ surface, reading, source: "line-admin" }),
+            },
+          );
+          const txt = resp.ok
+            ? `✅ 登録完了\n${surface} → ${reading}\n\n最大5分で音声に反映されます`
+            : `❌ 登録失敗 (${resp.status})`;
+          await lineClient.replyMessage(replyToken, [{ type: "text", text: txt }]);
+        } catch (err) {
+          console.error("[admin !fix] error:", err);
+        }
+      } else {
+        await lineClient.replyMessage(replyToken, [{
+          type: "text",
+          text: "使い方: !fix {単語} {よみ}\n例: !fix 説得力 せっとくりょく",
+        }]);
+      }
+      return;
+    }
+    // ─────────────────────────────────────────────────
 
     const friend = await getFriendByLineUserId(db, userId);
     if (!friend) return;
