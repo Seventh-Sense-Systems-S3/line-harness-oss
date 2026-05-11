@@ -1,19 +1,24 @@
 #!/usr/bin/env npx tsx
 /**
- * パーソナライズ一斉送信 — 予告1通目
+ * パーソナライズ一斉送信 — 予告1通目 (7 Persona 拡張版)
  *
- * グループ優先度（タグベース）:
- *   G1. 分身AI希望者（JSサミット②） → 分身AIいよいよ追伸
- *       ↳ + 水鏡_完了タグも持つ場合 → 水鏡進化追伸も追加
- *   G2. 水鏡GPT希望者（JSサミット①） → 水鏡GPT進化追伸（全員同じ）
- *   G3. TikTok集客（コンサル） → TikTok/AI波追伸
- *   G4. その他 → 追伸なし
+ * proposal 35711a90 (鬼洗練 v3 Round 2 構造美 12) の物理実装。
+ *
+ * Persona 優先順位（タグベース、上から先に判定）:
+ *   P1. 水鏡_完了 → metadata から word_1/2/3 + soul_name + birth_month を verbatim 引用
+ *   P2. 水鏡_step1stuck or _q1stuck → birth_month のみ、お詫び
+ *   P3. 水鏡_中盤離脱_q2-q6 or _card直前stuck → partial verbatim + お詫び
+ *   P4. 分身AI希望(JSサミット②) → 分身AI追伸 + 水鏡お詫び
+ *   P5. 水鏡GPT希望(JSサミット①) → 水鏡GPT進化追伸
+ *   P6. TikTok集客(コンサル) → TikTok/AI波追伸
+ *   P7. その他 → シンプル + 水鏡お詫び
  *
  * Usage:
  *   source scripts/load-env.sh
  *   npx tsx scripts/personalized-broadcast-1.ts --dry-run
  *   npx tsx scripts/personalized-broadcast-1.ts --dry-run --limit 20
- *   npx tsx scripts/personalized-broadcast-1.ts
+ *   npx tsx scripts/personalized-broadcast-1.ts --broadcast-id=<uuid>
+ *   BROADCAST_ID=<uuid> npx tsx scripts/personalized-broadcast-1.ts
  */
 
 const LINE_HARNESS_URL =
@@ -23,7 +28,15 @@ const LINE_HARNESS_API_KEY = process.env.LINE_HARNESS_API_KEY!;
 
 const isDryRun = process.argv.includes("--dry-run");
 const limitIdx = process.argv.indexOf("--limit");
-const sendLimit = limitIdx >= 0 ? Number(process.argv[limitIdx + 1]) : Infinity;
+const sendLimitRaw = limitIdx >= 0 ? Number(process.argv[limitIdx + 1]) : NaN;
+const sendLimit =
+  Number.isFinite(sendLimitRaw) && sendLimitRaw > 0 ? sendLimitRaw : Infinity;
+
+// broadcast_id を CLI 引数 or 環境変数から受け取る (任意)
+const BROADCAST_ID =
+  process.env.BROADCAST_ID ||
+  process.argv.find((a) => a.startsWith("--broadcast-id="))?.split("=")[1] ||
+  undefined;
 
 if (!LINE_HARNESS_API_KEY) throw new Error("LINE_HARNESS_API_KEY が未設定です");
 
@@ -34,6 +47,11 @@ const TAG = {
   tiktok: "2e08552e-24df-4c8c-817e-adb68f5976bd", // TikTok集客（コンサル）
   mizuDone1: "242f9775-2019-45cd-a050-75295672c5aa", // 水鏡_完了
   mizuDone2: "60638916-1b40-4321-921f-7c3a9c8d65de", // 水鏡診断完了
+  // TODO: LINE Harness API で GET /api/tags を叩いて取得、子竜に確認後置換
+  mizuStep1Stuck: "98c16087-5d16-464a-9955-af8bcf0e1fc8", // 水鏡_step1stuck (Notion S02)
+  mizuQ1Stuck: "17f1224f-949d-4634-b66a-07064c5a4c03", // 水鏡_q1stuck (Notion S02)
+  mizuMiddleDropoff: "d09373c8-0384-417f-a9c9-ad17a816aee4", // 水鏡_中盤離脱_q2-q6 (Notion S04)
+  mizuCardStuck: "63f611bf-b374-45cd-9b28-e574d878b446", // 水鏡_card直前stuck (Notion S03)
 } as const;
 
 // ─── メッセージ定義 ───────────────────────────────────────────────
@@ -114,21 +132,80 @@ interface HarnessFriend {
   tags: HarnessTag[];
 }
 
-type Group = "G1_bunshi" | "G2_mizu_gpt" | "G3_tiktok" | "G4_other";
+type Group =
+  | "P1_mizu_done"
+  | "P2_mizu_step1stuck"
+  | "P3_mizu_middle_dropoff"
+  | "P4_bunshi"
+  | "P5_mizu_gpt"
+  | "P6_tiktok"
+  | "P7_other";
+
+// ─── metadata ヘルパー ───────────────────────────────────────────
+
+// 生年月日から月だけ抽出 (YYYY-MM-DD → MM、YYYY/MM/DD、YYYYMMDD 等に対応)
+function getBirthMonth(metadata: Record<string, string> | null): string | null {
+  if (!metadata) return null;
+  const birthDate =
+    metadata.birth_date || metadata.birthday || metadata.birth_day;
+  if (!birthDate) return null;
+  const match = birthDate.match(/(?:^|\D)(\d{4})[-/]?(\d{2})[-/]?(\d{2})/);
+  if (match) return String(parseInt(match[2], 10)); // 04 → 4
+  return null;
+}
+
+// metadata から verbatim 引用フィールド取得 (null safe)
+function getVerbatim(metadata: Record<string, string> | null): {
+  word1: string | null;
+  word2: string | null;
+  word3: string | null;
+  soulName: string | null;
+} {
+  if (!metadata)
+    return { word1: null, word2: null, word3: null, soulName: null };
+  return {
+    word1: metadata.mizukagami_user_word_1 || null,
+    word2: metadata.mizukagami_user_word_2 || null,
+    word3: metadata.mizukagami_user_word_3 || null,
+    soulName: metadata.soul_name || null,
+  };
+}
 
 // ─── グループ判定 ─────────────────────────────────────────────────
 
 function classifyFriend(friend: HarnessFriend): {
   group: Group;
-  hasMizuDone: boolean;
+  metadata: Record<string, string> | null;
 } {
   const tagIds = new Set(friend.tags.map((t) => t.id));
-  const hasMizuDone = tagIds.has(TAG.mizuDone1) || tagIds.has(TAG.mizuDone2);
+  const meta = friend.metadata;
 
-  if (tagIds.has(TAG.bunshiAI)) return { group: "G1_bunshi", hasMizuDone };
-  if (tagIds.has(TAG.mizuGPT)) return { group: "G2_mizu_gpt", hasMizuDone };
-  if (tagIds.has(TAG.tiktok)) return { group: "G3_tiktok", hasMizuDone };
-  return { group: "G4_other", hasMizuDone };
+  // P1: 水鏡完了 (mizuDone1 or mizuDone2)
+  if (tagIds.has(TAG.mizuDone1) || tagIds.has(TAG.mizuDone2)) {
+    return { group: "P1_mizu_done", metadata: meta };
+  }
+  // P2: 水鏡 step1stuck or q1stuck
+  if (tagIds.has(TAG.mizuStep1Stuck) || tagIds.has(TAG.mizuQ1Stuck)) {
+    return { group: "P2_mizu_step1stuck", metadata: meta };
+  }
+  // P3: 中盤離脱 or card直前stuck
+  if (tagIds.has(TAG.mizuMiddleDropoff) || tagIds.has(TAG.mizuCardStuck)) {
+    return { group: "P3_mizu_middle_dropoff", metadata: meta };
+  }
+  // P4: 分身AI希望
+  if (tagIds.has(TAG.bunshiAI)) {
+    return { group: "P4_bunshi", metadata: meta };
+  }
+  // P5: 水鏡GPT
+  if (tagIds.has(TAG.mizuGPT)) {
+    return { group: "P5_mizu_gpt", metadata: meta };
+  }
+  // P6: TikTok
+  if (tagIds.has(TAG.tiktok)) {
+    return { group: "P6_tiktok", metadata: meta };
+  }
+  // P7: その他
+  return { group: "P7_other", metadata: meta };
 }
 
 // ─── メッセージ生成 ───────────────────────────────────────────────
@@ -139,46 +216,98 @@ function buildMessage(friend: HarnessFriend): {
   label: string;
 } {
   const name = friend.displayName ?? "あなた";
-  const { group, hasMizuDone } = classifyFriend(friend);
+  const { group, metadata: meta } = classifyFriend(friend);
 
   let greeting: string;
+  let body: string = BASE_BODY;
   let ps: string;
+  let label: string;
 
   switch (group) {
-    case "G1_bunshi":
-      greeting = `以前、分身AI作りに興味があると教えてくれた${name}さんへ`;
-      ps = [PS_BUNSHI(name), hasMizuDone ? PS_MIZU_EVOLUTION : ""]
-        .filter(Boolean)
-        .join("\n\n");
-      break;
+    case "P1_mizu_done": {
+      const { word1, word2, word3, soulName } = getVerbatim(meta);
+      const birthMonth = getBirthMonth(meta);
+      // 生年月日は現状 D1 に未 sync (水鏡 Supabase のみ保存)、soul_name 単独 fallback あり
+      // soul_name はすでに「○○の魂」形式なので prefix は「の 」のみ (重複回避)
+      const greetingPrefix =
+        birthMonth && soulName
+          ? `${birthMonth}月生まれ、${soulName}の `
+          : soulName
+            ? `${soulName}の `
+            : birthMonth
+              ? `${birthMonth}月生まれの `
+              : "";
+      greeting = `${greetingPrefix}${name}さんへ`;
 
-    case "G2_mizu_gpt":
+      const verbatimBlock =
+        word1 || word2 || word3
+          ? `「${word1 || ""}」\n「${word2 || ""}」\n「${word3 || ""}」\n\nあの言葉、ちゃんと覚えています。`
+          : "";
+
+      body = verbatimBlock ? `${verbatimBlock}\n\n${BASE_BODY}` : BASE_BODY;
+      ps = `追伸：水鏡を最後まで歩んでくれた${name}さんへ、2、3日後のお知らせは、まさにあなたにこそ届くものです。`;
+      label = `P1 水鏡完了(${birthMonth ? birthMonth + "月" : "no-birth"}/${soulName || "no-soul"}) name=${name}`;
+      break;
+    }
+
+    case "P2_mizu_step1stuck": {
+      const birthMonth = getBirthMonth(meta);
+      const greetingPrefix = birthMonth ? `${birthMonth}月生まれの ` : "";
+      greeting = `${greetingPrefix}${name}さんへ`;
+      // 個別お詫び 1 つで完結 (PS_MIZU_APOLOGY は P4-P7 用、二重お詫び防止)
+      ps = `追伸：水鏡診断、生年月日を入れていただいた直後で止まってしまいましたよね。本当にごめんなさい。`;
+      label = `P2 step1stuck${birthMonth ? `(${birthMonth}月)` : ""} name=${name}`;
+      break;
+    }
+
+    case "P3_mizu_middle_dropoff": {
+      const { word1, word2, word3 } = getVerbatim(meta);
+      greeting = `${name}さんへ`;
+      const verbatimBlock =
+        word1 || word2 || word3
+          ? `「${[word1, word2, word3].filter(Boolean).join("」「")}」\n\nあなたが残してくれた言葉、ちゃんと受け取っています。\n\n`
+          : "";
+      body = verbatimBlock ? `${verbatimBlock}${BASE_BODY}` : BASE_BODY;
+      // 個別お詫び 1 つで完結 (PS_MIZU_APOLOGY は P4-P7 用、二重お詫び防止)
+      ps = `追伸：水鏡診断、途中まで進んでくれたのに最後までお届けできなくてごめんなさい。`;
+      label = `P3 middle_dropoff name=${name}${verbatimBlock ? " +verbatim" : ""}`;
+      break;
+    }
+
+    case "P4_bunshi": {
+      greeting = `以前、分身AI作りに興味があると教えてくれた${name}さんへ`;
+      ps = [PS_BUNSHI(name), PS_MIZU_APOLOGY].filter(Boolean).join("\n\n");
+      label = `P4 bunshi name=${name}`;
+      break;
+    }
+
+    case "P5_mizu_gpt": {
       greeting = `${name}さんへ`;
       ps = PS_MIZU_GPT;
+      label = `P5 mizu_gpt name=${name}`;
       break;
+    }
 
-    case "G3_tiktok":
+    case "P6_tiktok": {
       greeting = `${name}さんへ`;
       ps = PS_TIKTOK(name);
+      label = `P6 tiktok name=${name}`;
       break;
+    }
 
-    case "G4_other":
-    default:
+    case "P7_other":
+    default: {
       greeting = `${name}さんへ`;
-      ps = "";
+      ps = PS_MIZU_APOLOGY;
+      label = `P7 other name=${name}`;
       break;
-  }
-
-  // 水鏡未完了タグ持ち全員に「お詫び追伸」を追加 (proposal 07285094 ATSP)
-  if (!hasMizuDone) {
-    ps = [ps, PS_MIZU_APOLOGY].filter(Boolean).join("\n\n");
+    }
   }
 
   // 末尾署名は必ず付ける (PS から署名除去、ATSP の Snippet 分離原則)
-  const parts = [greeting, BASE_BODY, ps, SIGN_DEFAULT].filter(Boolean);
+  const parts = [greeting, body, ps, SIGN_DEFAULT].filter(Boolean);
   const text = parts.join("\n\n");
 
-  const label = `${group}${hasMizuDone ? "+水鏡完了" : ""} name=${name}`;
   return { text, group, label };
 }
 
@@ -192,7 +321,17 @@ async function harnessGet<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-async function harnessPush(friendId: string, text: string): Promise<void> {
+async function harnessPush(
+  friendId: string,
+  text: string,
+  broadcastId?: string,
+): Promise<void> {
+  const body: Record<string, unknown> = {
+    messageType: "text",
+    content: text,
+  };
+  if (broadcastId) body.broadcastId = broadcastId;
+
   const res = await fetch(
     `${LINE_HARNESS_URL}/api/friends/${friendId}/messages`,
     {
@@ -201,7 +340,7 @@ async function harnessPush(friendId: string, text: string): Promise<void> {
         Authorization: `Bearer ${LINE_HARNESS_API_KEY}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ messageType: "text", content: text }),
+      body: JSON.stringify(body),
     },
   );
   if (!res.ok)
@@ -217,8 +356,9 @@ function sleep(ms: number) {
 async function main() {
   console.log(`\n${"=".repeat(60)}`);
   console.log(
-    `🚀 パーソナライズBroadcast 1通目${isDryRun ? " [DRY-RUN]" : ""}`,
+    `🚀 パーソナライズBroadcast 1通目 (7 Persona)${isDryRun ? " [DRY-RUN]" : ""}`,
   );
+  if (BROADCAST_ID) console.log(`   broadcast_id: ${BROADCAST_ID}`);
   console.log(`${"=".repeat(60)}\n`);
 
   // 全友達をページネーションで取得（tagsを含む）
@@ -239,15 +379,28 @@ async function main() {
   console.log(`  総友達数: ${allFriends.length}人\n`);
 
   // グループ別集計（送信前にプレビュー）
-  const grouped = { G1_bunshi: 0, G2_mizu_gpt: 0, G3_tiktok: 0, G4_other: 0 };
+  const grouped: Record<Group, number> = {
+    P1_mizu_done: 0,
+    P2_mizu_step1stuck: 0,
+    P3_mizu_middle_dropoff: 0,
+    P4_bunshi: 0,
+    P5_mizu_gpt: 0,
+    P6_tiktok: 0,
+    P7_other: 0,
+  };
   for (const f of allFriends) {
     grouped[classifyFriend(f).group]++;
   }
-  console.log("📊 グループ内訳:");
-  console.log(`  G1 分身AI希望者      : ${grouped.G1_bunshi}人`);
-  console.log(`  G2 水鏡GPT希望者(JS①): ${grouped.G2_mizu_gpt}人`);
-  console.log(`  G3 TikTok集客        : ${grouped.G3_tiktok}人`);
-  console.log(`  G4 その他            : ${grouped.G4_other}人`);
+  console.log("📊 Persona 内訳:");
+  console.log(`  P1 水鏡完了             : ${grouped.P1_mizu_done}人`);
+  console.log(`  P2 step1/q1 stuck       : ${grouped.P2_mizu_step1stuck}人`);
+  console.log(
+    `  P3 中盤離脱/card stuck  : ${grouped.P3_mizu_middle_dropoff}人`,
+  );
+  console.log(`  P4 分身AI希望(JS②)      : ${grouped.P4_bunshi}人`);
+  console.log(`  P5 水鏡GPT希望(JS①)     : ${grouped.P5_mizu_gpt}人`);
+  console.log(`  P6 TikTok集客           : ${grouped.P6_tiktok}人`);
+  console.log(`  P7 その他               : ${grouped.P7_other}人`);
   console.log();
 
   const targets = allFriends.slice(
@@ -257,7 +410,7 @@ async function main() {
 
   if (isDryRun) {
     console.log(
-      `[DRY-RUN] ${targets.length}件プレビュー（各グループ先頭のみ表示）\n`,
+      `[DRY-RUN] ${targets.length}件プレビュー（各 Persona 先頭のみ表示）\n`,
     );
     const shown = new Set<Group>();
     for (const friend of targets) {
@@ -271,25 +424,31 @@ async function main() {
         console.log(text);
         console.log();
       }
-      if (shown.size === 4) break; // 全グループ表示したら終了
+      if (shown.size === 7) break; // 全 Persona 表示したら終了
     }
     console.log(`\n✅ dry-run 完了。送信するには --dry-run を外してください。`);
     return;
   }
 
   // 本番送信
-  const stats = { G1: 0, G2: 0, G3: 0, G4: 0, errors: 0 };
+  const stats: Record<Group | "errors", number> = {
+    P1_mizu_done: 0,
+    P2_mizu_step1stuck: 0,
+    P3_mizu_middle_dropoff: 0,
+    P4_bunshi: 0,
+    P5_mizu_gpt: 0,
+    P6_tiktok: 0,
+    P7_other: 0,
+    errors: 0,
+  };
   for (let i = 0; i < targets.length; i++) {
     const friend = targets[i];
     const { text, group } = buildMessage(friend);
     try {
-      await harnessPush(friend.id, text);
-      if (group === "G1_bunshi") stats.G1++;
-      else if (group === "G2_mizu_gpt") stats.G2++;
-      else if (group === "G3_tiktok") stats.G3++;
-      else stats.G4++;
+      await harnessPush(friend.id, text, BROADCAST_ID);
+      stats[group]++;
       process.stdout.write(
-        `\r  [${i + 1}/${targets.length}] G1:${stats.G1} G2:${stats.G2} G3:${stats.G3} G4:${stats.G4} ❌:${stats.errors}`,
+        `\r  [${i + 1}/${targets.length}] P1:${stats.P1_mizu_done} P2:${stats.P2_mizu_step1stuck} P3:${stats.P3_mizu_middle_dropoff} P4:${stats.P4_bunshi} P5:${stats.P5_mizu_gpt} P6:${stats.P6_tiktok} P7:${stats.P7_other} ❌:${stats.errors}`,
       );
       await sleep(50);
     } catch (e) {
@@ -301,11 +460,14 @@ async function main() {
   console.log(`\n\n${"=".repeat(60)}`);
   console.log("📊 送信完了");
   console.log(`${"=".repeat(60)}`);
-  console.log(`  G1 分身AI     : ${stats.G1}人`);
-  console.log(`  G2 水鏡GPT    : ${stats.G2}人`);
-  console.log(`  G3 TikTok     : ${stats.G3}人`);
-  console.log(`  G4 その他     : ${stats.G4}人`);
-  console.log(`  ❌ エラー     : ${stats.errors}件`);
+  console.log(`  P1 水鏡完了             : ${stats.P1_mizu_done}人`);
+  console.log(`  P2 step1/q1 stuck       : ${stats.P2_mizu_step1stuck}人`);
+  console.log(`  P3 中盤離脱/card stuck  : ${stats.P3_mizu_middle_dropoff}人`);
+  console.log(`  P4 分身AI希望(JS②)      : ${stats.P4_bunshi}人`);
+  console.log(`  P5 水鏡GPT希望(JS①)     : ${stats.P5_mizu_gpt}人`);
+  console.log(`  P6 TikTok集客           : ${stats.P6_tiktok}人`);
+  console.log(`  P7 その他               : ${stats.P7_other}人`);
+  console.log(`  ❌ エラー               : ${stats.errors}件`);
 }
 
 main().catch(console.error);

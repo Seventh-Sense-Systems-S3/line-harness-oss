@@ -335,6 +335,7 @@ friends.post("/api/friends/:id/messages", async (c) => {
       messageType?: string;
       content: string;
       altText?: string;
+      broadcastId?: string;
     }>();
 
     if (!body.content) {
@@ -383,9 +384,16 @@ friends.post("/api/friends/:id/messages", async (c) => {
     await db
       .prepare(
         `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, created_at)
-         VALUES (?, ?, 'outgoing', ?, ?, NULL, NULL, ?)`,
+         VALUES (?, ?, 'outgoing', ?, ?, ?, NULL, ?)`,
       )
-      .bind(logId, friend.id, messageType, body.content, jstNow())
+      .bind(
+        logId,
+        friend.id,
+        messageType,
+        body.content,
+        body.broadcastId ?? null,
+        jstNow(),
+      )
       .run();
 
     return c.json({ success: true, data: { messageId: logId } });
