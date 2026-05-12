@@ -42,7 +42,9 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Deploy Worker
-        run: npx wrangler@3.114.6 deploy --env production
+        run: |
+          rm -f .wrangler/deploy/config.json
+          npx wrangler@3.114.6 deploy --env production
         working-directory: apps/worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
