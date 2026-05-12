@@ -15,6 +15,8 @@ importers:
         specifier: '4'
         version: 4.77.0(@cloudflare/workers-types@4.20260317.1)
 
+  apps/soulflow-proxy-vnew: {}
+
   apps/web:
     dependencies:
       '@line-crm/shared':
@@ -66,6 +68,9 @@ importers:
       hono:
         specifier: ^4.6.0
         version: 4.12.8
+      posthog-node:
+        specifier: ^5.33.4
+        version: 5.33.7
     devDependencies:
       '@cloudflare/vite-plugin':
         specifier: ^1.0.0
@@ -1385,6 +1390,12 @@ packages:
   '@poppinss/exception@1.2.3':
     resolution: {integrity: sha512-dCED+QRChTVatE9ibtoaxc+WkdzOSjYTKi/+uacHWIsfodVfpsueo3+DKpgU5Px8qXjgmXkSvhXvSCz3fnP9lw==}
 
+  '@posthog/core@1.28.7':
+    resolution: {integrity: sha512-JmV2wN5sE7u2JWxwNNw6CBrPu5xDzIAMWR9zKBar8Pk/8TRrvbFPlXehap8xOtDslfnilY+/urpHeVHpbXMo4w==}
+
+  '@posthog/types@1.373.2':
+    resolution: {integrity: sha512-6o0AARB7OakxsrQiVeMow/m1QPnsI0Cdm7g0o5mNjVSLH/sU1MuTqckNQDLzImv++MzW0+Gyvq44cgwt3wP/Pw==}
+
   '@rollup/rollup-android-arm-eabi@4.59.0':
     resolution: {integrity: sha512-upnNBkA6ZH2VKGcBj9Fyl9IGNPULcjXRlg0LLeaioQWueH30p6IXtJEbKAgvyv+mJaMxSm1l6xwDXYjpEMiLMg==}
     cpu: [arm]
@@ -2347,6 +2358,15 @@ packages:
   postcss@8.5.8:
     resolution: {integrity: sha512-OW/rX8O/jXnm82Ey1k44pObPtdblfiuWnrd8X7GJ7emImCOstunGbXUpp7HdBrFQX6rJzn3sPT397Wp5aCwCHg==}
     engines: {node: ^10 || ^12 || >=14}
+
+  posthog-node@5.33.7:
+    resolution: {integrity: sha512-jxDLWJ6eMk93cAaZYeTHSGyHAIH2wPPm9EFOnoJb/GfJfjqIZe89NvSDqOYOqclTkImW3M/Js92yZVo1TKpYXA==}
+    engines: {node: ^20.20.0 || >=22.22.0}
+    peerDependencies:
+      rxjs: ^7.0.0
+    peerDependenciesMeta:
+      rxjs:
+        optional: true
 
   pretty-ms@9.3.0:
     resolution: {integrity: sha512-gjVS5hOP+M3wMm5nmNOucbIrqudzs9v/57bWRHQWLYklXqoXKrVfYW2W9+glfGsqtPgpiz5WwyEEB+ksXIx3gQ==}
@@ -3557,6 +3577,12 @@ snapshots:
 
   '@poppinss/exception@1.2.3': {}
 
+  '@posthog/core@1.28.7':
+    dependencies:
+      '@posthog/types': 1.373.2
+
+  '@posthog/types@1.373.2': {}
+
   '@rollup/rollup-android-arm-eabi@4.59.0':
     optional: true
 
@@ -4505,6 +4531,10 @@ snapshots:
       nanoid: 3.3.11
       picocolors: 1.1.1
       source-map-js: 1.2.1
+
+  posthog-node@5.33.7:
+    dependencies:
+      '@posthog/core': 1.28.7
 
   pretty-ms@9.3.0:
     dependencies:
