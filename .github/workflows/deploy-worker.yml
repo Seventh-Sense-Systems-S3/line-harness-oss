@@ -39,5 +39,5 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: apps/worker
-          preCommands: d1 migrations apply line-crm --env production --remote
+          preCommands: npx wrangler d1 migrations apply line-crm --env production --remote
           command: deploy --env production
