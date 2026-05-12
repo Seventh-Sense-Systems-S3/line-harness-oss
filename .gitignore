@@ -13,3 +13,14 @@ dist/
 .env.staging
 apps/web/out/
 apps/worker/dist/
+
+# Claude Code (personal config — never commit to OSS)
+.claude/
+.playwright-mcp/
+backups/
+
+# PaC v5 Sprint 1: 機密情報・一時ファイル (2026-05-12)
+mnemonic/
+consulting/
+000_INBOX/
+001_INBOX/
