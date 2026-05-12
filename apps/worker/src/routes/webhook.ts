@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { verifySignature, LineClient } from "@line-crm/line-sdk";
+import { createPostHogClient } from "../lib/posthog.js";
 import type {
   WebhookRequestBody,
   WebhookEvent,
@@ -70,6 +71,13 @@ webhook.post("/webhook", async (c) => {
 
   const lineClient = new LineClient(channelAccessToken);
 
+  const posthog = c.env.POSTHOG_API_KEY
+    ? createPostHogClient(
+        c.env.POSTHOG_API_KEY,
+        c.env.POSTHOG_HOST ?? "https://us.i.posthog.com",
+      )
+    : null;
+
   // 非同期処理 — LINE は ~1s 以内のレスポンスを要求
   const processingPromise = (async () => {
     for (const event of body.events) {
@@ -127,9 +135,11 @@ webhook.post("/webhook", async (c) => {
           c.env.SUPABASE_URL,
           c.env.SUPABASE_SERVICE_ROLE_KEY,
           c.env.OWNER_LINE_USER_ID,
+          posthog,
         );
       } catch (err) {
         console.error("Error handling webhook event:", err);
+        posthog?.captureException(err);
       }
     }
   })();
@@ -153,6 +163,7 @@ async function handleEvent(
   supabaseMizukagamiUrl?: string,
   supabaseMizukagamiServiceKey?: string,
   ownerLineUserId?: string,
+  posthog?: import("posthog-node").PostHog | null,
 ): Promise<void> {
   if (event.type === "follow") {
     const userId =
@@ -173,27 +184,25 @@ async function handleEvent(
 
     const friend = await upsertFriend(db, {
       lineUserId: userId,
+      lineAccountId: lineAccountId ?? null,
       displayName: profile?.displayName ?? null,
       pictureUrl: profile?.pictureUrl ?? null,
       statusMessage: profile?.statusMessage ?? null,
     });
 
     console.log(
-      `[follow] friend.id=${friend.id} friend.line_account_id=${(friend as any).line_account_id}`,
+      `[follow] friend.id=${friend.id} friend.line_account_id=${friend.line_account_id}`,
     );
 
-    // Set line_account_id for multi-account tracking (always update on follow)
-    if (lineAccountId) {
-      await db
-        .prepare(
-          "UPDATE friends SET line_account_id = ?, updated_at = ? WHERE id = ?",
-        )
-        .bind(lineAccountId, jstNow(), friend.id)
-        .run();
-      console.log(
-        `[follow] line_account_id set to ${lineAccountId} for friend ${friend.id}`,
-      );
-    }
+    posthog?.capture({
+      distinctId: userId,
+      event: "line_friend_followed",
+      properties: {
+        friend_id: friend.id,
+        display_name: profile?.displayName ?? null,
+        line_account_id: lineAccountId,
+      },
+    });
 
     // ref_code: LINE chatReferral（Voom/広告経由）または follow_params から取得
     const chatReferral = (event as unknown as Record<string, unknown>)
@@ -380,6 +389,12 @@ async function handleEvent(
       event.source.type === "user" ? event.source.userId : undefined;
     if (!userId) return;
 
+    posthog?.capture({
+      distinctId: userId,
+      event: "line_friend_unfollowed",
+      properties: { line_account_id: lineAccountId },
+    });
+
     await updateFriendFollowStatus(db, userId, false);
     return;
   }
@@ -464,7 +479,12 @@ async function handleEvent(
       const parts = msgText.slice(5).trim().split(/\s+/);
       const surface = parts[0];
       const reading = parts.slice(1).join(" ");
-      if (surface && reading && supabaseMizukagamiUrl && supabaseMizukagamiServiceKey) {
+      if (
+        surface &&
+        reading &&
+        supabaseMizukagamiUrl &&
+        supabaseMizukagamiServiceKey
+      ) {
         try {
           const resp = await fetch(
             `${supabaseMizukagamiUrl}/rest/v1/tts_pronunciation_rules`,
@@ -482,15 +502,19 @@ async function handleEvent(
           const txt = resp.ok
             ? `✅ 登録完了\n${surface} → ${reading}\n\n最大5分で音声に反映されます`
             : `❌ 登録失敗 (${resp.status})`;
-          await lineClient.replyMessage(replyToken, [{ type: "text", text: txt }]);
+          await lineClient.replyMessage(replyToken, [
+            { type: "text", text: txt },
+          ]);
         } catch (err) {
           console.error("[admin !fix] error:", err);
         }
       } else {
-        await lineClient.replyMessage(replyToken, [{
-          type: "text",
-          text: "使い方: !fix {単語} {よみ}\n例: !fix 説得力 せっとくりょく",
-        }]);
+        await lineClient.replyMessage(replyToken, [
+          {
+            type: "text",
+            text: "使い方: !fix {単語} {よみ}\n例: !fix 説得力 せっとくりょく",
+          },
+        ]);
       }
       return;
     }
@@ -909,6 +933,16 @@ async function handleEvent(
       lineAccessToken,
       lineAccountId,
     );
+
+    posthog?.capture({
+      distinctId: userId,
+      event: "line_message_received",
+      properties: {
+        friend_id: friend.id,
+        auto_reply_matched: matched,
+        line_account_id: lineAccountId,
+      },
+    });
 
     return;
   }
