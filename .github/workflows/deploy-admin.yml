@@ -1,6 +1,8 @@
 name: Deploy Admin Panel
 
-# Configure CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID secrets to enable auto-deploy
+# Secrets are resolved from 1Password at runtime via op:// references.
+# GitHub Org Secret required: OP_SERVICE_ACCOUNT_TOKEN
+# 1Password vault: Seventh-Sense-Systems-Enterprise-Secrets
 on:
   workflow_dispatch:
   push:
@@ -16,6 +18,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Load secrets from 1Password
+        uses: 1password/load-secrets-action@v2
+        with:
+          export-env: true
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          CLOUDFLARE_API_TOKEN: op://Seventh-Sense-Systems-Enterprise-Secrets/fpz5d3p7kpfbvypjhxyb33wati/credential
+
       - uses: pnpm/action-setup@v4
 
       - uses: actions/setup-node@v4
@@ -29,11 +39,10 @@ jobs:
 
       - run: pnpm --filter web build
         env:
-          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+          NEXT_PUBLIC_API_URL: https://line-crm-worker.kyousuke10000.workers.dev
 
       - name: Deploy to Cloudflare Pages
         run: npx wrangler@latest pages deploy out --project-name=line-harness-admin --branch=main --commit-dirty=true
         working-directory: apps/web
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ACCOUNT_ID: c4d92c479a309c53bf05082a7e938bd1
