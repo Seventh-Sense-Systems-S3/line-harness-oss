@@ -1,0 +1,48 @@
+name: Deploy Admin Panel
+
+# Secrets are resolved from 1Password at runtime via op:// references.
+# GitHub Org Secret required: OP_SERVICE_ACCOUNT_TOKEN
+# 1Password vault: Seventh-Sense-Systems-Enterprise-Secrets
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/web/**'
+      - 'packages/shared/**'
+      - '.github/workflows/deploy-admin.yml'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load secrets from 1Password
+        uses: 1password/load-secrets-action@v2
+        with:
+          export-env: true
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          CLOUDFLARE_API_TOKEN: op://Seventh-Sense-Systems-Enterprise-Secrets/fpz5d3p7kpfbvypjhxyb33wati/credential
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm --filter @line-crm/shared build
+
+      - run: pnpm --filter web build
+        env:
+          NEXT_PUBLIC_API_URL: https://line-crm-worker.kyousuke10000.workers.dev
+
+      - name: Deploy to Cloudflare Pages
+        run: npx wrangler@latest pages deploy out --project-name=line-harness-admin --branch=main --commit-dirty=true
+        working-directory: apps/web
+        env:
+          CLOUDFLARE_ACCOUNT_ID: c4d92c479a309c53bf05082a7e938bd1
