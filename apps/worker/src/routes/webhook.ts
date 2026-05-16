@@ -18,6 +18,7 @@ import {
   upsertChatOnMessage,
   getLineAccounts,
   jstNow,
+  addTagToFriend,
 } from "@line-crm/db";
 import { fireEvent } from "../services/event-bus.js";
 import { buildMessage, expandVariables } from "../services/step-delivery.js";
@@ -63,6 +64,9 @@ webhook.post("/webhook", async (c) => {
         break;
       }
     }
+    console.log(
+      `[mizu-routing-debug] destination=${(body as { destination?: string }).destination} matchedChannelId=${matchedChannelId} accountsCount=${accounts.length}`,
+    );
   }
 
   // Verify with resolved secret
@@ -139,10 +143,10 @@ webhook.post("/webhook", async (c) => {
           c.env.SUPABASE_SERVICE_ROLE_KEY,
           c.env.OWNER_LINE_USER_ID,
           posthog,
-          // ADR: Channel-Based Routing — DEV LINE OA → DEV mizukagami worker
+          // ADR: Channel-Based Routing — DEV LINE OA → DEV mizukagami worker (Service binding)
           matchedChannelId,
           c.env.MIZUKAGAMI_DEV_LINE_CHANNEL_ID,
-          c.env.MIZUKAGAMI_WORKER_DEV_URL,
+          c.env.MIZUKAGAMI_DEV,
         );
       } catch (err) {
         console.error("Error handling webhook event:", err);
@@ -174,7 +178,7 @@ async function handleEvent(
   // ADR: Channel-Based Routing — DEV/PROD 振り分けのための任意パラメータ
   matchedChannelId: string | null = null,
   mizukagamiDevChannelId?: string,
-  mizukagamiWorkerDevUrl?: string,
+  mizukagamiDevService?: Fetcher,
 ): Promise<void> {
   if (event.type === "follow") {
     const userId =
@@ -547,6 +551,39 @@ async function handleEvent(
       .bind(logId, friend.id, incomingText, now)
       .run();
 
+    // ─── IGNITION 発火 — 事前登録キーワード ───
+    const trimmedIncoming = incomingText.trim();
+    if (
+      trimmedIncoming === "発火" ||
+      trimmedIncoming.toLowerCase() === "ignition"
+    ) {
+      try {
+        await addTagToFriend(
+          db,
+          friend.id,
+          "e3470801-f9d2-474a-9eb0-a4dfd8983262",
+        );
+        if (replyToken) {
+          const ignitionReplyText = `"発火" 受け取りました🔥\n\n来週月曜、LP公開と同時に\nあなたに最優先でご案内します。\n\n6/2-3-4 にむけて、\n楽しみにお待ちください。`;
+          await lineClient.replyMessage(replyToken, [
+            { type: "text", text: ignitionReplyText },
+          ]);
+          const replyLogId = crypto.randomUUID();
+          await db
+            .prepare(
+              `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, created_at)
+               VALUES (?, ?, 'outgoing', 'text', ?, NULL, NULL, ?)`,
+            )
+            .bind(replyLogId, friend.id, ignitionReplyText, jstNow())
+            .run();
+        }
+      } catch (err) {
+        console.error("[ignition handler] error:", err);
+      }
+      return;
+    }
+    // ─────────────────────────────────────────────────
+
     // MIZUKAGAMI Mirror Session — 水鏡 Worker に転送（最優先で処理）
     // ADR: Channel-Based Routing — DEV LINE OA からの message は DEV worker URL に振る。
     // それ以外は従来通り PROD Service binding (mizukagamiService) or fallback URL。
@@ -554,7 +591,10 @@ async function handleEvent(
       mizukagamiDevChannelId &&
       matchedChannelId &&
       matchedChannelId === mizukagamiDevChannelId &&
-      mizukagamiWorkerDevUrl,
+      mizukagamiDevService,
+    );
+    console.log(
+      `[mizu-routing-debug] matchedChannelId=${matchedChannelId} devChannelId=${mizukagamiDevChannelId} devSvc=${mizukagamiDevService ? "set" : "unset"} isDevChannel=${isDevChannel}`,
     );
     if (
       mizukagamiApiKey &&
@@ -562,7 +602,7 @@ async function handleEvent(
     ) {
       try {
         const mizuUrl = isDevChannel
-          ? `${mizukagamiWorkerDevUrl}/handle`
+          ? "https://mizukagami-dev/handle"
           : mizukagamiService
             ? "https://mizukagami/handle"
             : `${mizukagamiWorkerUrl}/handle`;
@@ -581,11 +621,15 @@ async function handleEvent(
             replyToken,
           }),
         });
-        const mizuRes = isDevChannel
-          ? await fetch(req)
-          : mizukagamiService
-            ? await mizukagamiService.fetch(req)
-            : await fetch(req);
+        const mizuRes =
+          isDevChannel && mizukagamiDevService
+            ? await mizukagamiDevService.fetch(req)
+            : mizukagamiService
+              ? await mizukagamiService.fetch(req)
+              : await fetch(req);
+        console.log(
+          `[mizu-routing-debug] mizuUrl=${mizuUrl} status=${mizuRes.status} ok=${mizuRes.ok}`,
+        );
         if (mizuRes.ok) {
           const mizuResult = await mizuRes.json<{ handled: boolean }>();
           if (mizuResult.handled) {
