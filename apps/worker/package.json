@@ -16,6 +16,7 @@
     "@line-crm/line-sdk": "workspace:*",
     "@line-crm/shared": "workspace:*",
     "hono": "^4.6.0",
+    "posthog-node": "^5.34.2",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

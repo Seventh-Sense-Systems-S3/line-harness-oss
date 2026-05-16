@@ -223,7 +223,6 @@ async function handleEvent(
 
     const friend = await upsertFriend(db, {
       lineUserId: userId,
-      lineAccountId: lineAccountId ?? null,
       displayName: profile?.displayName ?? null,
       pictureUrl: profile?.pictureUrl ?? null,
       statusMessage: profile?.statusMessage ?? null,
@@ -321,6 +320,7 @@ async function handleEvent(
             const steps = await getScenarioSteps(db, scenario.id);
             const firstStep = steps[0];
             if (
+              friendScenario &&
               firstStep &&
               firstStep.delay_minutes === 0 &&
               friendScenario.status === "active"

@@ -105,6 +105,9 @@ export type Env = {
     OWNER_LINE_USER_ID: string;
     SUPABASE_URL?: string;
     SUPABASE_SERVICE_ROLE_KEY?: string;
+    // ─── PostHog (analytics) ───
+    POSTHOG_API_KEY?: string;
+    POSTHOG_HOST?: string;
   };
   Variables: {
     staff: { id: string; name: string; role: "owner" | "admin" | "staff" };
