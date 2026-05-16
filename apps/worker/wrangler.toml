@@ -55,3 +55,9 @@ crons = ["*/5 * * * *"]
 [[env.production.services]]
 binding = "MIZUKAGAMI"
 service = "mizukagami-worker"
+
+# ADR: Channel-Based Routing — DEV LINE OA からの webhook は
+# DEV mizukagami worker (HTTP fetch) に振り分ける。PROD は上の Service binding を継続使用。
+[env.production.vars]
+MIZUKAGAMI_DEV_LINE_CHANNEL_ID = "2010022438"
+MIZUKAGAMI_WORKER_DEV_URL = "https://mizukagami-worker-dev.kyousuke10000.workers.dev"

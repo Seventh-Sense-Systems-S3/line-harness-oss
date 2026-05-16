@@ -43,6 +43,8 @@ webhook.post("/webhook", async (c) => {
   let channelSecret = c.env.LINE_CHANNEL_SECRET;
   let channelAccessToken = c.env.LINE_CHANNEL_ACCESS_TOKEN;
   let matchedAccountId: string | null = null;
+  // ADR: Channel-Based Routing — DEV/PROD 振り分けに使う LINE channel_id
+  let matchedChannelId: string | null = null;
 
   if ((body as { destination?: string }).destination) {
     const accounts = await getLineAccounts(db);
@@ -57,6 +59,7 @@ webhook.post("/webhook", async (c) => {
         channelSecret = account.channel_secret;
         channelAccessToken = account.channel_access_token;
         matchedAccountId = account.id;
+        matchedChannelId = account.channel_id;
         break;
       }
     }
@@ -136,6 +139,10 @@ webhook.post("/webhook", async (c) => {
           c.env.SUPABASE_SERVICE_ROLE_KEY,
           c.env.OWNER_LINE_USER_ID,
           posthog,
+          // ADR: Channel-Based Routing — DEV LINE OA → DEV mizukagami worker
+          matchedChannelId,
+          c.env.MIZUKAGAMI_DEV_LINE_CHANNEL_ID,
+          c.env.MIZUKAGAMI_WORKER_DEV_URL,
         );
       } catch (err) {
         console.error("Error handling webhook event:", err);
@@ -164,6 +171,10 @@ async function handleEvent(
   supabaseMizukagamiServiceKey?: string,
   ownerLineUserId?: string,
   posthog?: import("posthog-node").PostHog | null,
+  // ADR: Channel-Based Routing — DEV/PROD 振り分けのための任意パラメータ
+  matchedChannelId: string | null = null,
+  mizukagamiDevChannelId?: string,
+  mizukagamiWorkerDevUrl?: string,
 ): Promise<void> {
   if (event.type === "follow") {
     const userId =
@@ -537,11 +548,24 @@ async function handleEvent(
       .run();
 
     // MIZUKAGAMI Mirror Session — 水鏡 Worker に転送（最優先で処理）
-    if (mizukagamiApiKey && (mizukagamiService || mizukagamiWorkerUrl)) {
+    // ADR: Channel-Based Routing — DEV LINE OA からの message は DEV worker URL に振る。
+    // それ以外は従来通り PROD Service binding (mizukagamiService) or fallback URL。
+    const isDevChannel = Boolean(
+      mizukagamiDevChannelId &&
+      matchedChannelId &&
+      matchedChannelId === mizukagamiDevChannelId &&
+      mizukagamiWorkerDevUrl,
+    );
+    if (
+      mizukagamiApiKey &&
+      (isDevChannel || mizukagamiService || mizukagamiWorkerUrl)
+    ) {
       try {
-        const mizuUrl = mizukagamiService
-          ? "https://mizukagami/handle"
-          : `${mizukagamiWorkerUrl}/handle`;
+        const mizuUrl = isDevChannel
+          ? `${mizukagamiWorkerDevUrl}/handle`
+          : mizukagamiService
+            ? "https://mizukagami/handle"
+            : `${mizukagamiWorkerUrl}/handle`;
         const replyToken = (event as unknown as { replyToken?: string })
           .replyToken;
         const req = new Request(mizuUrl, {
@@ -557,9 +581,11 @@ async function handleEvent(
             replyToken,
           }),
         });
-        const mizuRes = mizukagamiService
-          ? await mizukagamiService.fetch(req)
-          : await fetch(req);
+        const mizuRes = isDevChannel
+          ? await fetch(req)
+          : mizukagamiService
+            ? await mizukagamiService.fetch(req)
+            : await fetch(req);
         if (mizuRes.ok) {
           const mizuResult = await mizuRes.json<{ handled: boolean }>();
           if (mizuResult.handled) {

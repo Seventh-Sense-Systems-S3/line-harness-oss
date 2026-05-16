@@ -66,6 +66,11 @@ export type Env = {
     MIZUKAGAMI_WORKER_URL: string;
     MIZUKAGAMI_API_KEY: string;
     MIZUKAGAMI: Fetcher;
+    // ADR: Channel-Based Routing — DEV LINE OA からの webhook を
+    // DEV mizukagami worker (HTTP fetch) に振り分けるための任意設定。
+    // 未設定なら従来通り PROD Service binding (MIZUKAGAMI) を使う。
+    MIZUKAGAMI_DEV_LINE_CHANNEL_ID?: string;
+    MIZUKAGAMI_WORKER_DEV_URL?: string;
     X_HARNESS_URL?: string;
     IG_HARNESS_URL?: string;
     IG_HARNESS_LINK_SECRET?: string;
