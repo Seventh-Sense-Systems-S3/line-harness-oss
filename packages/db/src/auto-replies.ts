@@ -9,6 +9,7 @@ export interface AutoReply {
   match_type: 'exact' | 'contains';
   response_type: string;
   response_content: string;
+  template_id: string | null;
   line_account_id: string | null;
   is_active: number;
   created_at: string;
@@ -48,6 +49,7 @@ export interface CreateAutoReplyInput {
   matchType?: 'exact' | 'contains';
   responseType?: string;
   responseContent: string;
+  templateId?: string | null;
   lineAccountId?: string | null;
 }
 
@@ -62,8 +64,8 @@ export async function createAutoReply(
     .prepare(
       `INSERT INTO auto_replies
          (id, keyword, match_type, response_type, response_content,
-          line_account_id, is_active, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, 1, ?)`,
+          template_id, line_account_id, is_active, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`,
     )
     .bind(
       id,
@@ -71,6 +73,7 @@ export async function createAutoReply(
       input.matchType ?? 'exact',
       input.responseType ?? 'text',
       input.responseContent,
+      input.templateId ?? null,
       input.lineAccountId ?? null,
       now,
     )
@@ -84,6 +87,7 @@ export interface UpdateAutoReplyInput {
   matchType?: 'exact' | 'contains';
   responseType?: string;
   responseContent?: string;
+  templateId?: string | null;
   lineAccountId?: string | null;
   isActive?: boolean;
 }
@@ -105,6 +109,7 @@ export async function updateAutoReply(
            match_type = ?,
            response_type = ?,
            response_content = ?,
+           template_id = ?,
            line_account_id = ?,
            is_active = ?,
            created_at = ?
@@ -115,6 +120,7 @@ export async function updateAutoReply(
       input.matchType ?? existing.match_type,
       input.responseType ?? existing.response_type,
       input.responseContent ?? existing.response_content,
+      'templateId' in input ? (input.templateId ?? null) : existing.template_id,
       'lineAccountId' in input ? (input.lineAccountId ?? null) : existing.line_account_id,
       'isActive' in input ? (input.isActive ? 1 : 0) : existing.is_active,
       existing.created_at,

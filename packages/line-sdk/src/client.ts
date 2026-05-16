@@ -167,6 +167,24 @@ export class LineClient {
     return data as { richMenuId: string };
   }
 
+  async getDefaultRichMenuId(): Promise<string | null> {
+    const url = `${LINE_API_BASE}/v2/bot/user/all/richmenu`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${this.channelAccessToken}`,
+      },
+    });
+    if (res.status === 404) return null;
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`LINE API error: ${res.status} ${res.statusText} — ${text}`);
+    }
+    const data = (await res.json()) as { richMenuId: string };
+    return data.richMenuId;
+  }
+
   // ─── Helpers ──────────────────────────────────────────────────────────────
 
   async pushTextMessage(to: string, text: string): Promise<unknown> {

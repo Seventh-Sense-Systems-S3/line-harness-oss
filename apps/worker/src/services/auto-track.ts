@@ -15,10 +15,30 @@ const APP_LINK_DOMAINS = new Set([
 function isAppLinkDomain(url: string): boolean {
   try {
     const hostname = new URL(url).hostname.replace(/^www\./, '');
-    return APP_LINK_DOMAINS.has(hostname);
+    if (APP_LINK_DOMAINS.has(hostname)) return true;
+    // common share / mobile / regional subdomains: vm.tiktok.com, m.youtube.com,
+    // mobile.x.com 等。`.<root-domain>` で末尾一致させる。
+    for (const root of APP_LINK_DOMAINS) {
+      if (hostname.endsWith(`.${root}`)) return true;
+    }
+    return false;
   } catch {
     return false;
   }
+}
+
+/**
+ * URL に `openExternalBrowser=1` を追加する。`#fragment` がある場合は fragment の前に
+ * 入れる必要がある (`...?param=1#anchor` の順序を保たないと LINE がフラグを認識しない、
+ * かつ fragment 自体が変わって anchored リンク先 (GitHub コメント等) が壊れる)。
+ */
+function appendOpenExternalBrowser(url: string): string {
+  if (url.includes('openExternalBrowser=')) return url;
+  const hashIdx = url.indexOf('#');
+  const base = hashIdx >= 0 ? url.slice(0, hashIdx) : url;
+  const fragment = hashIdx >= 0 ? url.slice(hashIdx) : '';
+  const sep = base.includes('?') ? '&' : '?';
+  return `${base}${sep}openExternalBrowser=1${fragment}`;
 }
 
 const URL_REGEX = /https?:\/\/[^\s"'<>\])}]+/g;
@@ -148,23 +168,41 @@ export async function autoTrackContent(
   const urls = extractUrls(content);
   if (urls.size === 0) return { messageType, content };
 
-  const urlMap = await createTrackingMap(db, urls, workerUrl);
-
-  // Text messages → convert to Flex with buttons
+  // Text messages: app-link domain (YouTube / X / TikTok 等) は raw URL を残して
+  //   `?openExternalBrowser=1` だけ付ける。LINE 上で rich preview (YT サムネ等) が
+  //   描画されるので「短い URL + プレビュー」というユーザー体験になる。クリックは
+  //   ファーストパーティ計測できないが、それらのプラットフォームが自社で計測する。
+  // Flex messages: trackingUrl + openExternalBrowser=1 (button 化されてプレビュー
+  //   は不要なため、tracking 優先する従来通り)。
   if (messageType === 'text') {
-    const links = Array.from(urlMap.values());
-    return {
-      messageType: 'flex',
-      content: textToFlex(content, links),
-    };
+    // app-link domain は tracking 不要なので createTrackedLink 自体スキップする
+    // (無駄な link_clicks レコード防止)。
+    const trackable = new Set([...urls].filter((u) => !isAppLinkDomain(u)));
+    const urlMap = trackable.size > 0
+      ? await createTrackingMap(db, trackable, workerUrl)
+      : new Map<string, { trackingUrl: string; originalUrl: string; label: string }>();
+
+    let result = content;
+    for (const url of urls) {
+      let replacement: string;
+      if (isAppLinkDomain(url)) {
+        replacement = appendOpenExternalBrowser(url);
+      } else {
+        const tracked = urlMap.get(url);
+        replacement = tracked ? tracked.trackingUrl : url;
+      }
+      result = result.split(url).join(replacement);
+    }
+    return { messageType: 'text', content: result };
   }
 
   // Flex messages → replace URLs inline in the JSON
   // For app-link domains, also inject openExternalBrowser=1 into the URI action
+  const urlMap = await createTrackingMap(db, urls, workerUrl);
   let result = content;
   for (const [original, { trackingUrl, originalUrl }] of urlMap) {
     const finalUrl = isAppLinkDomain(originalUrl)
-      ? `${trackingUrl}${trackingUrl.includes('?') ? '&' : '?'}openExternalBrowser=1`
+      ? appendOpenExternalBrowser(trackingUrl)
       : trackingUrl;
     result = result.split(original).join(finalUrl);
   }

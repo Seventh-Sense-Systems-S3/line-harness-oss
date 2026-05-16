@@ -26,8 +26,32 @@ import type { Env } from "../index.js";
 
 const webhook = new Hono<Env>();
 
+// LINE webhook bodies are small (events array). Cap defends against unauthenticated
+// large-payload DoS before signature verification (upstream #104). 1 MiB leaves room
+// for bursty batched deliveries (~100 events × ~5 KB) while still well below the
+// 128 MB Cloudflare Workers memory ceiling.
+const MAX_WEBHOOK_BODY_SIZE = 1024 * 1024; // 1 MiB
+
 webhook.post("/webhook", async (c) => {
+  // Pre-read size guard: reject before reading the body if Content-Length is oversized.
+  const contentLengthHeader = c.req.header("Content-Length");
+  if (contentLengthHeader) {
+    const declared = Number.parseInt(contentLengthHeader, 10);
+    if (Number.isFinite(declared) && declared > MAX_WEBHOOK_BODY_SIZE) {
+      return c.json({ status: "too_large" }, 413);
+    }
+  }
+
   const rawBody = await c.req.text();
+
+  // Post-read size guard for the case where Content-Length was absent or untrustworthy.
+  // Use UTF-8 byte count: rawBody.length counts UTF-16 code units, so multibyte
+  // payloads (Japanese/emoji) would otherwise bypass the cap.
+  const rawBodyByteLength = new TextEncoder().encode(rawBody).byteLength;
+  if (rawBodyByteLength > MAX_WEBHOOK_BODY_SIZE) {
+    return c.json({ status: "too_large" }, 413);
+  }
+
   const signature = c.req.header("X-Line-Signature") ?? "";
   const db = c.env.DB;
 

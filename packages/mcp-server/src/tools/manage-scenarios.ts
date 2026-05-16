@@ -24,9 +24,11 @@ export function registerManageScenarios(server: McpServer): void {
       conditionType: z.string().nullable().optional().describe("Condition type (for add_step, update_step)"),
       conditionValue: z.string().nullable().optional().describe("Condition value (for add_step, update_step)"),
       nextStepOnFalse: z.number().nullable().optional().describe("Next step on false (for add_step, update_step)"),
+      templateId: z.string().nullable().optional().describe("Template ID reference (for add_step, update_step; null clears)"),
+      onReachTagId: z.string().nullable().optional().describe("Tag ID to attach on step reach (for add_step, update_step; null clears)"),
       accountId: z.string().optional().describe("LINE account ID for list (uses default if omitted)"),
     },
-    async ({ action, scenarioId, stepId, name, description, triggerType, triggerTagId, isActive, stepOrder, delayMinutes, messageType, messageContent, conditionType, conditionValue, nextStepOnFalse, accountId }) => {
+    async ({ action, scenarioId, stepId, name, description, triggerType, triggerTagId, isActive, stepOrder, delayMinutes, messageType, messageContent, conditionType, conditionValue, nextStepOnFalse, templateId, onReachTagId, accountId }) => {
       try {
         const client = getClient();
 
@@ -65,6 +67,7 @@ export function registerManageScenarios(server: McpServer): void {
           const step = await client.scenarios.addStep(scenarioId, {
             stepOrder, delayMinutes, messageType, messageContent,
             conditionType: conditionType ?? null, conditionValue: conditionValue ?? null, nextStepOnFalse: nextStepOnFalse ?? null,
+            templateId: templateId ?? null, onReachTagId: onReachTagId ?? null,
           });
           return { content: [{ type: "text" as const, text: JSON.stringify({ success: true, step }, null, 2) }] };
         }
@@ -79,6 +82,8 @@ export function registerManageScenarios(server: McpServer): void {
           if (conditionType !== undefined) input.conditionType = conditionType;
           if (conditionValue !== undefined) input.conditionValue = conditionValue;
           if (nextStepOnFalse !== undefined) input.nextStepOnFalse = nextStepOnFalse;
+          if (templateId !== undefined) input.templateId = templateId;
+          if (onReachTagId !== undefined) input.onReachTagId = onReachTagId;
           const step = await client.scenarios.updateStep(scenarioId, stepId, input);
           return { content: [{ type: "text" as const, text: JSON.stringify({ success: true, step }, null, 2) }] };
         }

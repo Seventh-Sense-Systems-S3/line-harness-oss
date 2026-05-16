@@ -89,6 +89,18 @@ export async function createTrafficPool(
     .bind(id, input.slug, input.name, input.activeAccountId, now, now)
     .run();
 
+  // Mirror the chosen active account into pool_accounts so the new pool isn't
+  // empty in the admin UI and getRandomPoolAccount() includes it on first use.
+  // INSERT OR IGNORE because pool_accounts.UNIQUE(pool_id, line_account_id)
+  // makes a follow-up explicit add idempotent.
+  await db
+    .prepare(
+      `INSERT OR IGNORE INTO pool_accounts (id, pool_id, line_account_id, is_active, created_at)
+       VALUES (?, ?, ?, 1, ?)`,
+    )
+    .bind(crypto.randomUUID(), id, input.activeAccountId, now)
+    .run();
+
   return (await getTrafficPoolById(db, id))!;
 }
 

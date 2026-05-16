@@ -77,6 +77,9 @@ const state: FormState = {
   refTrackedLinkId: null,
 };
 
+// Replier pool loading state (shared between renderFormPage and attachXAutocomplete)
+let _replierPoolReady = false;
+
 function escapeHtml(str: string): string {
   const div = document.createElement('div');
   div.textContent = str;
@@ -253,6 +256,11 @@ function injectStyles(): void {
     .submit-btn:active { opacity: 0.85; }
     .submit-btn:disabled { background: #bbb; cursor: not-allowed; }
     .form-error { color: #e53e3e; font-size: 12px; margin-top: 4px; }
+    .x-loading-spinner {
+      width: 28px; height: 28px; border: 3px solid #333; border-top-color: #1D9BF0;
+      border-radius: 50%; animation: x-spin 0.8s linear infinite;
+    }
+    @keyframes x-spin { to { transform: rotate(360deg); } }
     .x-autocomplete-wrap { position: relative; }
     .x-suggest-list {
       position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 100;
@@ -373,23 +381,138 @@ function render(): void {
         <span>${escapeHtml(profile.displayName)} さん</span>
       </div>`;
 
-  const fieldsHtml = formDef.fields.map(renderField).join('');
+  // Split fields: survey fields (page 1) vs x_username field (page 2)
+  const surveyFields = formDef.fields.filter((f) => f.name !== 'x_username');
+  const xUsernameField = formDef.fields.find((f) => f.name === 'x_username');
+  const hasTwoPages = !!xUsernameField && !!formDef.onSubmitWebhookUrl;
 
-  app.innerHTML = `
-    <div class="form-page">
-      <div class="form-header">
-        <h1>${escapeHtml(formDef.name).replace(/\\n|\n/g, '<br>')}</h1>
-        ${formDef.description && !formDef.onSubmitWebhookUrl ? `<p class="form-description">${escapeHtml(formDef.description).replace(/\\n|\n/g, '<br>')}</p>` : ''}
-        ${profileHtml}
+  const surveyFieldsHtml = surveyFields.map(renderField).join('');
+  const xFieldHtml = xUsernameField ? renderField(xUsernameField) : '';
+
+  if (hasTwoPages) {
+    // ─── 2-page layout ───
+    app.innerHTML = `
+      <div class="form-page">
+        <div class="form-header">
+          <h1>${escapeHtml(formDef.name).replace(/\\n|\n/g, '<br>')}</h1>
+          ${formDef.description && !formDef.onSubmitWebhookUrl ? `<p class="form-description">${escapeHtml(formDef.description).replace(/\\n|\n/g, '<br>')}</p>` : ''}
+          ${profileHtml}
+        </div>
+        <!-- Page 1: Survey -->
+        <div id="form-page-1">
+          <form id="survey-form" class="form-body" novalidate>
+            ${surveyFieldsHtml}
+            <button type="submit" class="submit-btn" id="nextBtn">次へ →</button>
+          </form>
+        </div>
+        <!-- Page 2: X-Link -->
+        <div id="form-page-2" hidden>
+          <div class="form-header" style="padding-top:0">
+            <h1>X-Link で受け取り</h1>
+          </div>
+          <form id="liff-form" class="form-body" novalidate>
+            ${xFieldHtml}
+            <button type="submit" class="submit-btn" id="submitBtn">X Harness を受け取る</button>
+          </form>
+        </div>
       </div>
-      <form id="liff-form" class="form-body" novalidate>
-        ${fieldsHtml}
-        <button type="submit" class="submit-btn" id="submitBtn">送信する</button>
-      </form>
-    </div>
-  `;
+    `;
 
-  attachFormEvents();
+    // Page 1 → Page 2 transition
+    document.getElementById('survey-form')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+
+      // Validate survey fields
+      for (const field of surveyFields) {
+        if (!field.required) continue;
+        if (field.type === 'checkbox') {
+          const checked = document.querySelectorAll<HTMLInputElement>(`input[name="${field.name}"]:checked`);
+          if (checked.length === 0) {
+            showFieldError(`${field.label} は必須項目です`);
+            return;
+          }
+        } else if (field.type === 'radio') {
+          const checked = document.querySelector<HTMLInputElement>(`input[name="${field.name}"]:checked`);
+          if (!checked) {
+            showFieldError(`${field.label} は必須項目です`);
+            return;
+          }
+        } else {
+          const el = document.querySelector<HTMLInputElement>(`[name="${field.name}"]`);
+          if (!el || !el.value.trim()) {
+            showFieldError(`${field.label} は必須項目です`);
+            return;
+          }
+        }
+      }
+
+      // Save survey data (partial submit)
+      const nextBtn = document.getElementById('nextBtn') as HTMLButtonElement;
+      nextBtn.disabled = true;
+      nextBtn.textContent = '保存中...';
+
+      const surveyData: Record<string, unknown> = {};
+      for (const field of surveyFields) {
+        if (field.type === 'checkbox') {
+          surveyData[field.name] = Array.from(document.querySelectorAll<HTMLInputElement>(`input[name="${field.name}"]:checked`)).map((el) => el.value);
+        } else if (field.type === 'radio') {
+          surveyData[field.name] = document.querySelector<HTMLInputElement>(`input[name="${field.name}"]:checked`)?.value ?? '';
+        } else {
+          surveyData[field.name] = (document.querySelector<HTMLInputElement>(`[name="${field.name}"]`)?.value ?? '').trim();
+        }
+      }
+
+      try {
+        await apiCall(`/api/forms/${formDef.id}/partial`, {
+          method: 'POST',
+          body: JSON.stringify({
+            lineUserId: state.profile?.userId,
+            friendId: state.friendId,
+            data: surveyData,
+          }),
+        });
+      } catch { /* non-blocking */ }
+
+      // Transition to page 2
+      document.getElementById('form-page-1')!.hidden = true;
+      document.getElementById('form-page-2')!.hidden = false;
+      window.scrollTo(0, 0);
+
+      // Show loading overlay if replier pool is still loading
+      if (!_replierPoolReady) {
+        const xInput = document.querySelector<HTMLInputElement>('.x-autocomplete-input');
+        if (xInput) xInput.disabled = true;
+        const wrap = document.querySelector('.x-autocomplete-wrap');
+        if (wrap) {
+          const overlay = document.createElement('div');
+          overlay.id = 'x-loading-overlay';
+          overlay.innerHTML = '<div class="x-loading-spinner"></div><p>X連携データを読み込み中...</p>';
+          overlay.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:12px;padding:24px 0;color:#888;font-size:14px;';
+          wrap.parentElement?.insertBefore(overlay, wrap);
+        }
+      }
+    });
+
+    attachFormEvents();
+  } else {
+    // ─── Single page layout (original) ───
+    const fieldsHtml = formDef.fields.map(renderField).join('');
+    app.innerHTML = `
+      <div class="form-page">
+        <div class="form-header">
+          <h1>${escapeHtml(formDef.name).replace(/\\n|\n/g, '<br>')}</h1>
+          ${formDef.description && !formDef.onSubmitWebhookUrl ? `<p class="form-description">${escapeHtml(formDef.description).replace(/\\n|\n/g, '<br>')}</p>` : ''}
+          ${profileHtml}
+        </div>
+        <form id="liff-form" class="form-body" novalidate>
+          ${fieldsHtml}
+          <button type="submit" class="submit-btn" id="submitBtn">送信する</button>
+        </form>
+      </div>
+    `;
+
+    attachFormEvents();
+  }
 }
 
 async function showSubmitConditions(conditions: Record<string, boolean | null>, passed: boolean): Promise<void> {
@@ -507,6 +630,17 @@ function renderFormError(message: string): void {
   `;
 }
 
+function showFieldError(message: string): void {
+  const existing = getApp().querySelector('.form-error-msg');
+  if (existing) existing.remove();
+  const errEl = document.createElement('p');
+  errEl.className = 'form-error-msg';
+  errEl.style.cssText = 'color:#e53e3e;font-size:14px;margin:8px 0;text-align:center;';
+  errEl.textContent = message;
+  const btn = document.getElementById('nextBtn') || document.getElementById('submitBtn');
+  btn?.parentElement?.insertBefore(errEl, btn);
+}
+
 function renderLoading(): void {
   const app = getApp();
   app.innerHTML = `
@@ -609,7 +743,7 @@ async function submitForm(): Promise<void> {
     // Webhook gate — pre-verified by /repliers endpoint
     if (state.formDef.onSubmitWebhookUrl) {
       // Check that user was selected from pre-verified repliers list
-      const xField = data.x_username as string | undefined;
+      const xField = ((data.x_username as string) ?? '').trim().replace(/^@/, '');
       if (!xField || xField !== state.verifiedXUsername) {
         state.submitting = false;
         if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = '送信する'; }
@@ -618,7 +752,9 @@ async function submitForm(): Promise<void> {
         const errEl = document.createElement('p');
         errEl.className = 'form-error-msg';
         errEl.style.cssText = 'color:#e53e3e;font-size:14px;margin:8px 0;text-align:center;';
-        errEl.textContent = '予測変換からX IDを選択してください';
+        errEl.textContent = !xField
+          ? 'X IDを入力してください'
+          : 'X IDを入力後、入力欄の外をタップして確認してください';
         submitBtn?.parentElement?.insertBefore(errEl, submitBtn);
         return;
       }
@@ -743,8 +879,25 @@ function attachXAutocomplete(): void {
       .then(r => r.json())
       .then((json: { success: boolean; data?: XFollowerSuggestion[] }) => {
         replierPool = json.data ?? [];
+        _replierPoolReady = true;
+        // If page 2 is already visible, remove loading overlay
+        const overlay = document.getElementById('x-loading-overlay');
+        if (overlay) {
+          overlay.remove();
+          input.disabled = false;
+          input.focus();
+        }
       })
-      .catch(() => {}); // silent fail
+      .catch(() => {
+        _replierPoolReady = true;
+        const overlay = document.getElementById('x-loading-overlay');
+        if (overlay) {
+          overlay.remove();
+          input.disabled = false;
+        }
+      });
+  } else {
+    _replierPoolReady = true;
   }
 
   function hideConditions(): void {
@@ -857,22 +1010,35 @@ function attachXAutocomplete(): void {
   }
 
   async function triggerVerify(username: string): Promise<void> {
-    if (!state.xHarnessBaseUrl || !username.trim()) return;
+    const clean = username.trim().replace(/^@/, '');
+    if (!state.xHarnessBaseUrl || !clean) return;
     const gateId = getGateId();
     if (!gateId) return;
 
     try {
-      const url = `${state.xHarnessBaseUrl}/api/engagement-gates/${encodeURIComponent(gateId)}/verify?username=${encodeURIComponent(username.trim())}`;
+      const url = `${state.xHarnessBaseUrl}/api/engagement-gates/${encodeURIComponent(gateId)}/verify?username=${encodeURIComponent(clean)}`;
       const res = await fetch(url, { headers: getWebhookHeaders() });
       if (!res.ok) throw new Error('verify failed');
       const json = await res.json() as { success: boolean; data?: VerifyResult };
       const verifyData = json.data;
       if (verifyData) {
         renderConditions(verifyData);
+        // Mark as verified so submit is allowed even without selecting from suggestions
+        // Allow submit for any verified user (server-side webhook does final eligibility check)
+        if (!verifyData.userNotFound) {
+          state.verifiedXUsername = clean;
+          if (input) input.value = clean; // normalize input (strip @)
+        }
       }
     } catch {
-      // Graceful degradation — hide conditions on error
+      // Hide stale gate condition rows before showing the error message
       hideConditions();
+      // Show helpful message on verify error (e.g. X API down)
+      if (conditionsResult) {
+        conditionsResult.innerHTML = '⚠️ 確認中にエラーが発生しました<br><span style="font-size:11px;font-weight:normal">しばらく待ってからもう一度お試しください</span>';
+        conditionsResult.className = 'x-conditions-summary fail';
+        conditionsResult.hidden = false;
+      }
     }
   }
 
@@ -885,7 +1051,7 @@ function attachXAutocomplete(): void {
       if (hint) {
         hint.innerHTML = replierPool.length === 0
           ? '<span style="color:#e53e3e">⏳ まだリアクションがありません</span><br><span style="font-size:11px;color:#888">ポストにリポスト＆フォローしてから再度お試しください</span>'
-          : '<span style="color:#e53e3e">🔍 一致するユーザーが見つかりません</span><br><span style="font-size:11px;color:#888">見つからない場合は、条件を満たした後に1〜2分ほど待ってからこのページを開き直してください</span>';
+          : '<span style="color:#888">候補に表示されなくても、そのままIDを入力して送信できます</span>';
         hint.hidden = false;
       }
       return;
@@ -916,7 +1082,7 @@ function attachXAutocomplete(): void {
   }
 
   input.addEventListener('input', () => {
-    const q = input.value.trim();
+    const q = input.value.trim().replace(/^@/, ''); // strip leading @
     if (verifyTimer !== null) clearTimeout(verifyTimer);
     // Clear verified flag when user types manually
     if (q !== state.verifiedXUsername) state.verifiedXUsername = '';
@@ -970,7 +1136,7 @@ function attachXAutocomplete(): void {
     setTimeout(() => {
       hideSuggestions();
       // Trigger verify on blur if input has a value
-      const username = input.value.trim();
+      const username = input.value.trim().replace(/^@/, '');
       if (username && getGateId()) {
         if (verifyTimer !== null) clearTimeout(verifyTimer);
         verifyTimer = setTimeout(() => {
@@ -1080,6 +1246,15 @@ export async function initForm(formId: string | null): Promise<void> {
     }
 
     render();
+
+    // Record form open event (fire-and-forget)
+    apiCall(`/api/forms/${state.formDef!.id}/opened`, {
+      method: 'POST',
+      body: JSON.stringify({
+        lineUserId: state.profile?.userId,
+        friendId: state.friendId,
+      }),
+    }).catch(() => { /* silent */ });
   } catch (err) {
     renderFormError(err instanceof Error ? err.message : 'エラーが発生しました');
   }

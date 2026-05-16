@@ -1,4 +1,3 @@
-import { extractFlexAltText } from '../utils/flex-alt-text.js';
 import {
   getBroadcastById,
   updateBroadcastStatus,
@@ -7,10 +6,11 @@ import {
   createBroadcastInsight,
 } from '@line-crm/db';
 import type { Broadcast } from '@line-crm/db';
-import type { LineClient, Message } from '@line-crm/line-sdk';
+import type { LineClient } from '@line-crm/line-sdk';
 import { calculateStaggerDelay, sleep, addMessageVariation } from './stealth.js';
 import { buildSegmentQuery } from './segment-query.js';
 import type { SegmentCondition } from './segment-query.js';
+import { buildMessage } from './broadcast.js';
 
 const MULTICAST_BATCH_SIZE = 500;
 
@@ -39,11 +39,18 @@ export async function processSegmentSend(
   let successCount = 0;
 
   try {
-    // Build and execute segment query to get matching friends
+    // Build and execute segment query to get matching friends (アカウントで絞り込み)
     const { sql, bindings } = buildSegmentQuery(condition);
+    const broadcastAccountId = (broadcast as unknown as Record<string, unknown>).line_account_id as string | null;
+    let finalSql = sql;
+    const finalBindings = [...bindings];
+    if (broadcastAccountId) {
+      finalSql = sql.replace('WHERE', 'WHERE f.line_account_id = ? AND');
+      finalBindings.unshift(broadcastAccountId);
+    }
     const queryResult = await db
-      .prepare(sql)
-      .bind(...bindings)
+      .prepare(finalSql)
+      .bind(...finalBindings)
       .all<FriendRow>();
 
     const friends = queryResult.results ?? [];
@@ -74,17 +81,16 @@ export async function processSegmentSend(
         await lineClient.multicast(lineUserIds, [batchMessage], [unit]);
         successCount += batch.length;
 
-        // Log successfully sent messages
-        for (const friend of batch) {
-          const logId = crypto.randomUUID();
-          await db
-            .prepare(
-              `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, created_at)
-               VALUES (?, ?, 'outgoing', ?, ?, ?, NULL, ?)`,
-            )
-            .bind(logId, friend.id, broadcast.message_type, broadcast.message_content, broadcastId, now)
-            .run();
-        }
+        // Log successfully sent messages (batch insert for performance)
+        // line_account_id は broadcast 設定時の固定値を記録 (送信時点のチャネル).
+        const segmentBroadcastAccount = (broadcast as unknown as Record<string, unknown>).line_account_id as string | null;
+        const logStmts = batch.map(friend =>
+          db.prepare(
+            `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, created_at)
+             VALUES (?, ?, 'outgoing', ?, ?, ?, NULL, 'broadcast', ?, ?)`,
+          ).bind(crypto.randomUUID(), friend.id, broadcast.message_type, broadcast.message_content, broadcastId, segmentBroadcastAccount, now),
+        );
+        await db.batch(logStmts);
       } catch (err) {
         console.error(`Segment multicast batch ${batchIndex} failed:`, err);
         // Continue with next batch; failed batch is not logged
@@ -103,35 +109,4 @@ export async function processSegmentSend(
   return (await getBroadcastById(db, broadcastId))!;
 }
 
-function buildMessage(messageType: string, messageContent: string, altText?: string): Message {
-  if (messageType === 'text') {
-    return { type: 'text', text: messageContent };
-  }
-
-  if (messageType === 'image') {
-    try {
-      const parsed = JSON.parse(messageContent) as {
-        originalContentUrl: string;
-        previewImageUrl: string;
-      };
-      return {
-        type: 'image',
-        originalContentUrl: parsed.originalContentUrl,
-        previewImageUrl: parsed.previewImageUrl,
-      };
-    } catch {
-      return { type: 'text', text: messageContent };
-    }
-  }
-
-  if (messageType === 'flex') {
-    try {
-      const contents = JSON.parse(messageContent);
-      return { type: 'flex', altText: altText || extractFlexAltText(contents), contents };
-    } catch {
-      return { type: 'text', text: messageContent };
-    }
-  }
-
-  return { type: 'text', text: messageContent };
-}
+// buildMessage is imported from ./broadcast.js (single source of truth)

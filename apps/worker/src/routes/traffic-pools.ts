@@ -123,6 +123,12 @@ trafficPools.delete('/api/traffic-pools/:id', async (c) => {
     if (!existing) {
       return c.json({ success: false, error: 'Traffic pool not found' }, 404);
     }
+    // The 'main' pool is the default fallback for /r/:ref / /auth/line and
+    // for new LINE account auto-enrollment; deleting it breaks single-account
+    // onboarding silently. Surface as 400 instead.
+    if (existing.slug === 'main') {
+      return c.json({ success: false, error: 'main pool cannot be deleted' }, 400);
+    }
     await deleteTrafficPool(c.env.DB, id);
     return c.json({ success: true, data: null });
   } catch (err) {
