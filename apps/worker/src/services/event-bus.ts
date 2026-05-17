@@ -19,6 +19,8 @@ import {
   enrollFriendInScenario,
   jstNow,
   getFriendScore,
+  getFriendById,
+  scenarioMatchesAccount,
 } from "@line-crm/db";
 import { LineClient } from "@line-crm/line-sdk";
 import type { Message } from "@line-crm/line-sdk";
@@ -287,9 +289,34 @@ async function executeAction(
       await removeTagFromFriend(db, friendId!, action.params.tagId);
       break;
 
-    case "start_scenario":
-      await enrollFriendInScenario(db, friendId!, action.params.scenarioId);
+    case "start_scenario": {
+      // Account-scope guard: automation rules + IF-THEN actions are admin-
+      // editable, so a `start_scenario` action can be wired to a scenario on
+      // a different LINE account than the friend that triggered the event.
+      // Block leakage explicitly so it surfaces in logs rather than silently
+      // sending across accounts.
+      const targetScenarioId = action.params.scenarioId;
+      const [friendRow, scenarioRow] = await Promise.all([
+        getFriendById(db, friendId!),
+        db
+          .prepare("SELECT line_account_id FROM scenarios WHERE id = ?")
+          .bind(targetScenarioId)
+          .first<{ line_account_id: string | null }>(),
+      ]);
+      if (
+        !scenarioMatchesAccount(
+          scenarioRow?.line_account_id,
+          friendRow?.line_account_id,
+        )
+      ) {
+        console.warn(
+          `[account-scope] BLOCKED event-bus start_scenario → scenario=${targetScenarioId} (scenario.account=${scenarioRow?.line_account_id}, friend=${friendId}.account=${friendRow?.line_account_id})`,
+        );
+        break;
+      }
+      await enrollFriendInScenario(db, friendId!, targetScenarioId);
       break;
+    }
 
     case "send_message": {
       if (!lineAccessToken || !friendId) break;
