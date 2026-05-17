@@ -1,4 +1,4 @@
-import { Hono, type Context } from 'hono';
+import { Hono, type Context } from "hono";
 import {
   getFriendByLineUserId,
   createUser,
@@ -18,9 +18,10 @@ import {
   getTrackedLinkById,
   getMessageTemplateById,
   jstNow,
-} from '@line-crm/db';
-import { buildIntroMessage } from '../services/intro-message.js';
-import type { Env } from '../index.js';
+  scenarioMatchesAccount,
+} from "@line-crm/db";
+import { buildIntroMessage } from "../services/intro-message.js";
+import type { Env } from "../index.js";
 
 const liffRoutes = new Hono<Env>();
 
@@ -41,21 +42,23 @@ async function linkIgIgsid(
   // notifying would then point IG Harness at the wrong LINE UUID).
   let linked = false;
   try {
-    const result = await c.env.DB
-      .prepare('UPDATE friends SET ig_igsid = ? WHERE id = ? AND (ig_igsid IS NULL OR ig_igsid = ?)')
+    const result = await c.env.DB.prepare(
+      "UPDATE friends SET ig_igsid = ? WHERE id = ? AND (ig_igsid IS NULL OR ig_igsid = ?)",
+    )
       .bind(igParam, friendId, igParam)
       .run();
     if (result.meta?.changes && result.meta.changes > 0) {
       linked = true;
     } else {
-      const row = await c.env.DB
-        .prepare('SELECT ig_igsid FROM friends WHERE id = ?')
+      const row = await c.env.DB.prepare(
+        "SELECT ig_igsid FROM friends WHERE id = ?",
+      )
         .bind(friendId)
         .first<{ ig_igsid: string | null }>();
       linked = row?.ig_igsid === igParam;
     }
   } catch (err) {
-    console.error('Failed to write friends.ig_igsid:', err);
+    console.error("Failed to write friends.ig_igsid:", err);
     return;
   }
 
@@ -69,23 +72,23 @@ async function linkIgIgsid(
   if (c.env.IG_HARNESS_URL && c.env.IG_HARNESS_LINK_SECRET) {
     c.executionCtx.waitUntil(
       fetch(`${c.env.IG_HARNESS_URL}/api/followers/link-line`, {
-        method: 'POST',
+        method: "POST",
         headers: {
-          'Content-Type': 'application/json',
-          'X-LINE-HARNESS-LINK-SECRET': c.env.IG_HARNESS_LINK_SECRET,
+          "Content-Type": "application/json",
+          "X-LINE-HARNESS-LINK-SECRET": c.env.IG_HARNESS_LINK_SECRET,
         },
         body: JSON.stringify({ igsid: igParam, line_friend_uuid: friendId }),
       })
         .then(async (res) => {
           if (!res.ok) {
             console.error(
-              'IG Harness link-line failed:',
+              "IG Harness link-line failed:",
               res.status,
-              await res.text().catch(() => ''),
+              await res.text().catch(() => ""),
             );
           }
         })
-        .catch((err) => console.error('IG Harness link-line error:', err)),
+        .catch((err) => console.error("IG Harness link-line error:", err)),
     );
   }
 }
@@ -117,7 +120,7 @@ async function applyRefAttribution(
   lineUserId: string,
   options?: { accountChannelId?: string | null },
 ): Promise<void> {
-  if (!ref || ref.startsWith('xh:')) return;
+  if (!ref || ref.startsWith("xh:")) return;
   const db = c.env.DB;
 
   const route = await getEntryRouteByRefCode(db, ref);
@@ -127,7 +130,8 @@ async function applyRefAttribution(
     if (tl?.is_active) trackedLink = tl;
   }
   const effectiveTagId = route?.tag_id ?? trackedLink?.tag_id ?? null;
-  const effectiveScenarioId = route?.scenario_id ?? trackedLink?.scenario_id ?? null;
+  const effectiveScenarioId =
+    route?.scenario_id ?? trackedLink?.scenario_id ?? null;
 
   if (effectiveTagId) {
     await addTagToFriend(db, friend.id, effectiveTagId);
@@ -144,9 +148,10 @@ async function applyRefAttribution(
         computeNextDeliveryAt,
         resolveStepContent,
         addTagToFriend,
-      } = await import('@line-crm/db');
-      const { LineClient } = await import('@line-crm/line-sdk');
-      const { buildMessage, expandVariables, resolveMetadata } = await import('../services/step-delivery.js');
+      } = await import("@line-crm/db");
+      const { LineClient } = await import("@line-crm/line-sdk");
+      const { buildMessage, expandVariables, resolveMetadata } =
+        await import("../services/step-delivery.js");
       const scenarioRow = await getScenarioById(db, effectiveScenarioId);
       if (!scenarioRow) return;
       const steps = scenarioRow.steps;
@@ -156,9 +161,13 @@ async function applyRefAttribution(
       if (!firstStep) return;
       const enrolledAtJst = new Date(Date.now() + 9 * 60 * 60_000);
       const firstScheduledAt = computeNextDeliveryAt(
-        { delivery_mode: scenarioRow.delivery_mode ?? 'relative' },
+        { delivery_mode: scenarioRow.delivery_mode ?? "relative" },
         firstStep,
-        { enrolledAt: enrolledAtJst, previousDeliveredAt: enrolledAtJst, now: enrolledAtJst },
+        {
+          enrolledAt: enrolledAtJst,
+          previousDeliveredAt: enrolledAtJst,
+          now: enrolledAtJst,
+        },
       );
       if (firstScheduledAt.getTime() > enrolledAtJst.getTime()) return;
 
@@ -169,9 +178,10 @@ async function applyRefAttribution(
       // (because the partial UNIQUE on friend_scenarios is keyed
       // `WHERE status != 'completed'`, so completed runs don't block
       // a new INSERT).
-      const cutoff = new Date(Date.now() - 60_000 + 9 * 60 * 60_000)
-        .toISOString()
-        .slice(0, -1) + '+09:00';
+      const cutoff =
+        new Date(Date.now() - 60_000 + 9 * 60 * 60_000)
+          .toISOString()
+          .slice(0, -1) + "+09:00";
       const recent = await db
         .prepare(
           `SELECT 1 FROM messages_log
@@ -183,14 +193,36 @@ async function applyRefAttribution(
         .first();
       if (recent) return;
 
+      // Account-scope guard: ref codes / tracked link IDs are URL-tamperable
+      // and can survive across LINE accounts (e.g. legacy QR codes). Block
+      // enrollment when the scenario's account does not match the friend's.
+      if (
+        !scenarioMatchesAccount(
+          scenarioRow.line_account_id,
+          friend.line_account_id,
+        )
+      ) {
+        console.warn(
+          `[account-scope] BLOCKED applyRefAttribution ref=${ref} → scenario=${effectiveScenarioId} (scenario.account=${scenarioRow.line_account_id}, friend=${friend.id}.account=${friend.line_account_id})`,
+        );
+        return;
+      }
+
       // INSERT OR IGNORE — null on re-clicks (already enrolled), still push.
-      const enrollment = await enrollFriendInScenario(db, friend.id, effectiveScenarioId);
+      const enrollment = await enrollFriendInScenario(
+        db,
+        friend.id,
+        effectiveScenarioId,
+      );
 
       // Resolve push token. Prefer caller-supplied account channel (OAuth
       // context), then friend.line_account_id, then the env default.
       let accessToken = c.env.LINE_CHANNEL_ACCESS_TOKEN;
       if (options?.accountChannelId) {
-        const acct = await getLineAccountByChannelId(db, options.accountChannelId);
+        const acct = await getLineAccountByChannelId(
+          db,
+          options.accountChannelId,
+        );
         if (acct?.channel_access_token) accessToken = acct.channel_access_token;
       } else if (friend.line_account_id) {
         const acct = await getLineAccountById(db, friend.line_account_id);
@@ -210,7 +242,9 @@ async function applyRefAttribution(
       const resolved = await resolveStepContent(db, firstStep);
       const expanded = expandVariables(
         resolved.messageContent,
-        { ...fresh, metadata: resolvedMeta } as Parameters<typeof expandVariables>[1],
+        { ...fresh, metadata: resolvedMeta } as Parameters<
+          typeof expandVariables
+        >[1],
         c.env.WORKER_URL,
       );
       const pushedMessage = buildMessage(resolved.messageType, expanded);
@@ -220,10 +254,11 @@ async function applyRefAttribution(
       // and so /chats and analytics show the message. Derive content from the
       // built message object (post cleanEmptyNodes / parse-failure fallback)
       // so the dashboard mirrors LINE exactly.
-      const nowIso = new Date(Date.now() + 9 * 60 * 60_000)
-        .toISOString()
-        .slice(0, -1) + '+09:00';
-      const { messageToLogPayload } = await import('../services/step-delivery.js');
+      const nowIso =
+        new Date(Date.now() + 9 * 60 * 60_000).toISOString().slice(0, -1) +
+        "+09:00";
+      const { messageToLogPayload } =
+        await import("../services/step-delivery.js");
       const liffLogPayload = messageToLogPayload(pushedMessage);
       await db
         .prepare(
@@ -248,28 +283,37 @@ async function applyRefAttribution(
       // Filter out completed rows — the partial UNIQUE allows multiple
       // historical completed rows to coexist, and we only want to repair
       // the active one. Pick the most recently updated as a tiebreaker.
-      const enrollmentRow = enrollment ?? await db
-        .prepare(
-          `SELECT id, current_step_order FROM friend_scenarios
+      const enrollmentRow =
+        enrollment ??
+        (await db
+          .prepare(
+            `SELECT id, current_step_order FROM friend_scenarios
            WHERE friend_id = ? AND scenario_id = ? AND status != 'completed'
            ORDER BY updated_at DESC LIMIT 1`,
-        )
-        .bind(friend.id, effectiveScenarioId)
-        .first<{ id: string; current_step_order: number }>();
-      if (enrollmentRow && enrollmentRow.current_step_order < firstStep.step_order) {
+          )
+          .bind(friend.id, effectiveScenarioId)
+          .first<{ id: string; current_step_order: number }>());
+      if (
+        enrollmentRow &&
+        enrollmentRow.current_step_order < firstStep.step_order
+      ) {
         const nextStep = steps[1];
         if (nextStep) {
           // step 2 も computeNextDeliveryAt で計算（elapsed/absolute_time で正しい時刻に）
           const next = computeNextDeliveryAt(
-            { delivery_mode: scenarioRow.delivery_mode ?? 'relative' },
+            { delivery_mode: scenarioRow.delivery_mode ?? "relative" },
             nextStep,
-            { enrolledAt: enrolledAtJst, previousDeliveredAt: enrolledAtJst, now: enrolledAtJst },
+            {
+              enrolledAt: enrolledAtJst,
+              previousDeliveredAt: enrolledAtJst,
+              now: enrolledAtJst,
+            },
           );
           await advanceFriendScenario(
             db,
             enrollmentRow.id,
             firstStep.step_order,
-            next.toISOString().slice(0, -1) + '+09:00',
+            next.toISOString().slice(0, -1) + "+09:00",
           );
         } else {
           await completeFriendScenario(db, enrollmentRow.id);
@@ -279,12 +323,15 @@ async function applyRefAttribution(
           try {
             await addTagToFriend(db, friend.id, firstStep.on_reach_tag_id);
           } catch (err) {
-            console.error(`[scenario] tag attach failed step=${firstStep.id}:`, err);
+            console.error(
+              `[scenario] tag attach failed step=${firstStep.id}:`,
+              err,
+            );
           }
         }
       }
     } catch (err) {
-      console.error('Ref scenario enrollment error:', err);
+      console.error("Ref scenario enrollment error:", err);
     }
   }
 }
@@ -302,24 +349,24 @@ async function applyRefAttribution(
  *   ?fbclid=xxx  — Meta Ads click ID
  *   ?utm_source=xxx, utm_medium, utm_campaign, utm_content, utm_term — UTM params
  */
-liffRoutes.get('/auth/line', async (c) => {
-  const ref = c.req.query('ref') || '';
-  const redirect = c.req.query('redirect') || '';
-  const formId = c.req.query('form') || '';
-  const gclid = c.req.query('gclid') || '';
-  const fbclid = c.req.query('fbclid') || '';
-  const twclid = c.req.query('twclid') || '';
-  const ttclid = c.req.query('ttclid') || '';
-  const utmSource = c.req.query('utm_source') || '';
-  const utmMedium = c.req.query('utm_medium') || '';
-  const utmCampaign = c.req.query('utm_campaign') || '';
-  let accountParam = c.req.query('account') || '';
-  const uidParam = c.req.query('uid') || ''; // existing user UUID for cross-account linking
-  const igParam = c.req.query('ig') || ''; // IG Harness IGSID for cross-platform linking
-  let poolAccount = ''; // pool's channel_id — passed via state only, not accountParam
+liffRoutes.get("/auth/line", async (c) => {
+  const ref = c.req.query("ref") || "";
+  const redirect = c.req.query("redirect") || "";
+  const formId = c.req.query("form") || "";
+  const gclid = c.req.query("gclid") || "";
+  const fbclid = c.req.query("fbclid") || "";
+  const twclid = c.req.query("twclid") || "";
+  const ttclid = c.req.query("ttclid") || "";
+  const utmSource = c.req.query("utm_source") || "";
+  const utmMedium = c.req.query("utm_medium") || "";
+  const utmCampaign = c.req.query("utm_campaign") || "";
+  let accountParam = c.req.query("account") || "";
+  const uidParam = c.req.query("uid") || ""; // existing user UUID for cross-account linking
+  const igParam = c.req.query("ig") || ""; // IG Harness IGSID for cross-platform linking
+  let poolAccount = ""; // pool's channel_id — passed via state only, not accountParam
   const baseUrl = new URL(c.req.url).origin;
 
-  const ua = c.req.header('user-agent') || '';
+  const ua = c.req.header("user-agent") || "";
 
   // Multi-account: resolve LINE Login channel + LIFF
   // Priority:
@@ -334,7 +381,8 @@ liffRoutes.get('/auth/line', async (c) => {
   // 1. entry_route → pool_id. getTrafficPoolById skips the is_active check
   // that getTrafficPoolBySlug does for us, so we filter disabled pools here
   // to honor an operator pause.
-  let resolvedPool: Awaited<ReturnType<typeof getTrafficPoolBySlug>> | null = null;
+  let resolvedPool: Awaited<ReturnType<typeof getTrafficPoolBySlug>> | null =
+    null;
   if (ref) {
     const route = await getEntryRouteByRefCode(c.env.DB, ref);
     if (route?.pool_id) {
@@ -355,25 +403,31 @@ liffRoutes.get('/auth/line', async (c) => {
   } else {
     // 3 / 4: pool lookup (entry_route.pool_id wins over query)
     if (!resolvedPool) {
-      const poolSlug = c.req.query('pool') || 'main';
+      const poolSlug = c.req.query("pool") || "main";
       resolvedPool = await getTrafficPoolBySlug(c.env.DB, poolSlug);
     }
     if (resolvedPool) {
       const account = await getRandomPoolAccount(c.env.DB, resolvedPool.id);
       if (account) {
         if (account.login_channel_id) channelId = account.login_channel_id;
-        if (account.liff_id) liffUrl = `https://liff.line.me/${account.liff_id}`;
+        if (account.liff_id)
+          liffUrl = `https://liff.line.me/${account.liff_id}`;
         if (account.channel_id) poolAccount = account.channel_id;
       } else {
         const allAccounts = await getPoolAccounts(c.env.DB, resolvedPool.id);
         if (allAccounts.length === 0) {
           // No pool_accounts yet — fallback to active_account_id (migration period)
-          if (resolvedPool.login_channel_id) channelId = resolvedPool.login_channel_id;
-          if (resolvedPool.liff_id) liffUrl = `https://liff.line.me/${resolvedPool.liff_id}`;
+          if (resolvedPool.login_channel_id)
+            channelId = resolvedPool.login_channel_id;
+          if (resolvedPool.liff_id)
+            liffUrl = `https://liff.line.me/${resolvedPool.liff_id}`;
           if (resolvedPool.channel_id) poolAccount = resolvedPool.channel_id;
         } else {
           // All pool_accounts disabled — fail closed, don't leak to default account
-          return c.text('このリンクは現在利用できません。しばらくしてからお試しください。', 503);
+          return c.text(
+            "このリンクは現在利用できません。しばらくしてからお試しください。",
+            503,
+          );
         }
       }
     }
@@ -383,26 +437,26 @@ liffRoutes.get('/auth/line', async (c) => {
   // xh: refs are X Harness one-time tokens — never forward to third-party URLs (liff.line.me / QR)
   // The token must reach /auth/callback, so it IS included in the OAuth state (handled by this worker).
   // It must NOT appear in LIFF URLs or QR codes that escape to external domains.
-  const externalRef = ref.startsWith('xh:') ? '' : ref;
+  const externalRef = ref.startsWith("xh:") ? "" : ref;
 
   // Build LIFF URL with ref + ad params (for mobile → LINE app)
   // Extract LIFF ID from URL and pass as query param so the app can init correctly
   const liffIdMatch = liffUrl.match(/liff\.line\.me\/([0-9]+-[A-Za-z0-9]+)/);
   const liffParams = new URLSearchParams();
-  if (liffIdMatch) liffParams.set('liffId', liffIdMatch[1]);
-  if (externalRef) liffParams.set('ref', externalRef);
-  if (formId) liffParams.set('form', formId);
-  const gateParam = c.req.query('gate') || '';
-  if (gateParam) liffParams.set('gate', gateParam);
-  const xhParam2 = c.req.query('xh') || '';
-  if (xhParam2) liffParams.set('xh', xhParam2);
-  if (igParam) liffParams.set('ig', igParam);
-  if (redirect) liffParams.set('redirect', redirect);
-  if (gclid) liffParams.set('gclid', gclid);
-  if (fbclid) liffParams.set('fbclid', fbclid);
-  if (twclid) liffParams.set('twclid', twclid);
-  if (ttclid) liffParams.set('ttclid', ttclid);
-  if (utmSource) liffParams.set('utm_source', utmSource);
+  if (liffIdMatch) liffParams.set("liffId", liffIdMatch[1]);
+  if (externalRef) liffParams.set("ref", externalRef);
+  if (formId) liffParams.set("form", formId);
+  const gateParam = c.req.query("gate") || "";
+  if (gateParam) liffParams.set("gate", gateParam);
+  const xhParam2 = c.req.query("xh") || "";
+  if (xhParam2) liffParams.set("xh", xhParam2);
+  if (igParam) liffParams.set("ig", igParam);
+  if (redirect) liffParams.set("redirect", redirect);
+  if (gclid) liffParams.set("gclid", gclid);
+  if (fbclid) liffParams.set("fbclid", fbclid);
+  if (twclid) liffParams.set("twclid", twclid);
+  if (ttclid) liffParams.set("ttclid", ttclid);
+  if (utmSource) liffParams.set("utm_source", utmSource);
   const liffTarget = liffParams.toString()
     ? `${liffUrl}?${liffParams.toString()}`
     : liffUrl;
@@ -415,15 +469,31 @@ liffRoutes.get('/auth/line', async (c) => {
   // can verify against the correct gate via the correct X Harness instance.
   // Without these, the form falls back to the gateId baked into the form's
   // onSubmitWebhookUrl (which is stale when a form is reused across campaigns).
-  const state = JSON.stringify({ ref, redirect, form: formId, gate: gateParam, xh: xhParam2, gclid, fbclid, twclid, ttclid, utmSource, utmMedium, utmCampaign, account: accountParam || poolAccount, uid: uidParam, ig: igParam });
+  const state = JSON.stringify({
+    ref,
+    redirect,
+    form: formId,
+    gate: gateParam,
+    xh: xhParam2,
+    gclid,
+    fbclid,
+    twclid,
+    ttclid,
+    utmSource,
+    utmMedium,
+    utmCampaign,
+    account: accountParam || poolAccount,
+    uid: uidParam,
+    ig: igParam,
+  });
   const encodedState = btoa(state);
-  const loginUrl = new URL('https://access.line.me/oauth2/v2.1/authorize');
-  loginUrl.searchParams.set('response_type', 'code');
-  loginUrl.searchParams.set('client_id', channelId);
-  loginUrl.searchParams.set('redirect_uri', callbackUrl);
-  loginUrl.searchParams.set('scope', 'profile openid email');
-  loginUrl.searchParams.set('bot_prompt', 'aggressive');
-  loginUrl.searchParams.set('state', encodedState);
+  const loginUrl = new URL("https://access.line.me/oauth2/v2.1/authorize");
+  loginUrl.searchParams.set("response_type", "code");
+  loginUrl.searchParams.set("client_id", channelId);
+  loginUrl.searchParams.set("redirect_uri", callbackUrl);
+  loginUrl.searchParams.set("scope", "profile openid email");
+  loginUrl.searchParams.set("bot_prompt", "aggressive");
+  loginUrl.searchParams.set("state", encodedState);
 
   // Build LIFF URL with params (opens LINE app directly on mobile + QR on PC)
   // externalRef used — xh: tokens must not appear in QR codes or LIFF URLs
@@ -431,15 +501,17 @@ liffRoutes.get('/auth/line', async (c) => {
   // against the correct gate (otherwise the form falls back to the stale gate
   // baked into the form's webhook URL when forms are reused across campaigns).
   const qrParams = new URLSearchParams();
-  if (liffIdMatch) qrParams.set('liffId', liffIdMatch[1]);
-  if (externalRef) qrParams.set('ref', externalRef);
-  if (formId) qrParams.set('form', formId);
-  if (gateParam) qrParams.set('gate', gateParam);
-  if (xhParam2) qrParams.set('xh', xhParam2);
-  if (uidParam) qrParams.set('uid', uidParam);
-  if (accountParam) qrParams.set('account', accountParam);
-  if (igParam) qrParams.set('ig', igParam);
-  const qrUrl = qrParams.toString() ? `${liffUrl}?${qrParams.toString()}` : liffUrl;
+  if (liffIdMatch) qrParams.set("liffId", liffIdMatch[1]);
+  if (externalRef) qrParams.set("ref", externalRef);
+  if (formId) qrParams.set("form", formId);
+  if (gateParam) qrParams.set("gate", gateParam);
+  if (xhParam2) qrParams.set("xh", xhParam2);
+  if (uidParam) qrParams.set("uid", uidParam);
+  if (accountParam) qrParams.set("account", accountParam);
+  if (igParam) qrParams.set("ig", igParam);
+  const qrUrl = qrParams.toString()
+    ? `${liffUrl}?${qrParams.toString()}`
+    : liffUrl;
 
   // Mobile: route through /r/:ref so users get the OS-aware landing page
   // (long-press hint on iOS, intent:// URL on Android) instead of being
@@ -463,10 +535,12 @@ liffRoutes.get('/auth/line', async (c) => {
       const reqUrl = new URL(c.req.url);
       const passthrough = new URLSearchParams();
       for (const [key, value] of reqUrl.searchParams) {
-        if (key !== 'ref') passthrough.set(key, value);
+        if (key !== "ref") passthrough.set(key, value);
       }
       const qs = passthrough.toString();
-      return c.redirect(`/r/${encodeURIComponent(externalRef)}${qs ? '?' + qs : ''}`);
+      return c.redirect(
+        `/r/${encodeURIComponent(externalRef)}${qs ? "?" + qs : ""}`,
+      );
     }
     return c.redirect(qrUrl);
   }
@@ -517,23 +591,23 @@ liffRoutes.get('/auth/line', async (c) => {
  *
  * Same query params as /auth/line. No HTML rendering, no smart logic.
  */
-liffRoutes.get('/auth/oauth', async (c) => {
-  const ref = c.req.query('ref') || '';
-  const redirect = c.req.query('redirect') || '';
-  const formId = c.req.query('form') || '';
-  const gateParam = c.req.query('gate') || '';
-  const xhParam = c.req.query('xh') || '';
-  const gclid = c.req.query('gclid') || '';
-  const fbclid = c.req.query('fbclid') || '';
-  const twclid = c.req.query('twclid') || '';
-  const ttclid = c.req.query('ttclid') || '';
-  const utmSource = c.req.query('utm_source') || '';
-  const utmMedium = c.req.query('utm_medium') || '';
-  const utmCampaign = c.req.query('utm_campaign') || '';
-  const accountParam = c.req.query('account') || '';
-  const uidParam = c.req.query('uid') || '';
-  const igParam = c.req.query('ig') || '';
-  let poolAccount = '';
+liffRoutes.get("/auth/oauth", async (c) => {
+  const ref = c.req.query("ref") || "";
+  const redirect = c.req.query("redirect") || "";
+  const formId = c.req.query("form") || "";
+  const gateParam = c.req.query("gate") || "";
+  const xhParam = c.req.query("xh") || "";
+  const gclid = c.req.query("gclid") || "";
+  const fbclid = c.req.query("fbclid") || "";
+  const twclid = c.req.query("twclid") || "";
+  const ttclid = c.req.query("ttclid") || "";
+  const utmSource = c.req.query("utm_source") || "";
+  const utmMedium = c.req.query("utm_medium") || "";
+  const utmCampaign = c.req.query("utm_campaign") || "";
+  const accountParam = c.req.query("account") || "";
+  const uidParam = c.req.query("uid") || "";
+  const igParam = c.req.query("ig") || "";
+  let poolAccount = "";
   const baseUrl = new URL(c.req.url).origin;
 
   // Pool / account resolution — same logic as /auth/line
@@ -542,7 +616,7 @@ liffRoutes.get('/auth/oauth', async (c) => {
     const account = await getLineAccountByChannelId(c.env.DB, accountParam);
     if (account?.login_channel_id) channelId = account.login_channel_id;
   } else {
-    const poolSlug = c.req.query('pool') || 'main';
+    const poolSlug = c.req.query("pool") || "main";
     const pool = await getTrafficPoolBySlug(c.env.DB, poolSlug);
     if (pool) {
       const account = await getRandomPoolAccount(c.env.DB, pool.id);
@@ -550,13 +624,16 @@ liffRoutes.get('/auth/oauth', async (c) => {
         if (account.login_channel_id) channelId = account.login_channel_id;
         if (account.channel_id) poolAccount = account.channel_id;
       } else {
-        const { getPoolAccounts } = await import('@line-crm/db');
+        const { getPoolAccounts } = await import("@line-crm/db");
         const allAccounts = await getPoolAccounts(c.env.DB, pool.id);
         if (allAccounts.length === 0) {
           if (pool.login_channel_id) channelId = pool.login_channel_id;
           if (pool.channel_id) poolAccount = pool.channel_id;
         } else {
-          return c.text('このリンクは現在利用できません。しばらくしてからお試しください。', 503);
+          return c.text(
+            "このリンクは現在利用できません。しばらくしてからお試しください。",
+            503,
+          );
         }
       }
     }
@@ -565,19 +642,30 @@ liffRoutes.get('/auth/oauth', async (c) => {
   // Build OAuth URL with full state
   const callbackUrl = `${baseUrl}/auth/callback`;
   const state = JSON.stringify({
-    ref, redirect, form: formId, gate: gateParam, xh: xhParam,
-    gclid, fbclid, twclid, ttclid,
-    utmSource, utmMedium, utmCampaign,
-    account: accountParam || poolAccount, uid: uidParam, ig: igParam,
+    ref,
+    redirect,
+    form: formId,
+    gate: gateParam,
+    xh: xhParam,
+    gclid,
+    fbclid,
+    twclid,
+    ttclid,
+    utmSource,
+    utmMedium,
+    utmCampaign,
+    account: accountParam || poolAccount,
+    uid: uidParam,
+    ig: igParam,
   });
   const encodedState = btoa(state);
-  const loginUrl = new URL('https://access.line.me/oauth2/v2.1/authorize');
-  loginUrl.searchParams.set('response_type', 'code');
-  loginUrl.searchParams.set('client_id', channelId);
-  loginUrl.searchParams.set('redirect_uri', callbackUrl);
-  loginUrl.searchParams.set('scope', 'profile openid email');
-  loginUrl.searchParams.set('bot_prompt', 'aggressive');
-  loginUrl.searchParams.set('state', encodedState);
+  const loginUrl = new URL("https://access.line.me/oauth2/v2.1/authorize");
+  loginUrl.searchParams.set("response_type", "code");
+  loginUrl.searchParams.set("client_id", channelId);
+  loginUrl.searchParams.set("redirect_uri", callbackUrl);
+  loginUrl.searchParams.set("scope", "profile openid email");
+  loginUrl.searchParams.set("bot_prompt", "aggressive");
+  loginUrl.searchParams.set("state", encodedState);
 
   return c.redirect(loginUrl.toString());
 });
@@ -587,50 +675,50 @@ liffRoutes.get('/auth/oauth', async (c) => {
  *
  * Exchanges code for tokens, extracts sub (UUID), links friend.
  */
-liffRoutes.get('/auth/callback', async (c) => {
-  const code = c.req.query('code');
-  const stateParam = c.req.query('state') || '';
-  const error = c.req.query('error');
+liffRoutes.get("/auth/callback", async (c) => {
+  const code = c.req.query("code");
+  const stateParam = c.req.query("state") || "";
+  const error = c.req.query("error");
 
   // Parse state (contains ref, redirect, and ad click IDs)
-  let ref = '';
-  let redirect = '';
-  let formId = '';
-  let gateParam = '';
-  let xhParam = '';
-  let gclid = '';
-  let fbclid = '';
-  let twclid = '';
-  let ttclid = '';
-  let utmSource = '';
-  let utmMedium = '';
-  let utmCampaign = '';
-  let accountParam = '';
-  let uidParam = '';
-  let igParam = '';
+  let ref = "";
+  let redirect = "";
+  let formId = "";
+  let gateParam = "";
+  let xhParam = "";
+  let gclid = "";
+  let fbclid = "";
+  let twclid = "";
+  let ttclid = "";
+  let utmSource = "";
+  let utmMedium = "";
+  let utmCampaign = "";
+  let accountParam = "";
+  let uidParam = "";
+  let igParam = "";
   try {
     const parsed = JSON.parse(atob(stateParam));
-    ref = parsed.ref || '';
-    redirect = parsed.redirect || '';
-    formId = parsed.form || '';
-    gateParam = parsed.gate || '';
-    xhParam = parsed.xh || '';
-    gclid = parsed.gclid || '';
-    fbclid = parsed.fbclid || '';
-    twclid = parsed.twclid || '';
-    ttclid = parsed.ttclid || '';
-    utmSource = parsed.utmSource || '';
-    utmMedium = parsed.utmMedium || '';
-    utmCampaign = parsed.utmCampaign || '';
-    accountParam = parsed.account || '';
-    uidParam = parsed.uid || '';
-    igParam = parsed.ig || '';
+    ref = parsed.ref || "";
+    redirect = parsed.redirect || "";
+    formId = parsed.form || "";
+    gateParam = parsed.gate || "";
+    xhParam = parsed.xh || "";
+    gclid = parsed.gclid || "";
+    fbclid = parsed.fbclid || "";
+    twclid = parsed.twclid || "";
+    ttclid = parsed.ttclid || "";
+    utmSource = parsed.utmSource || "";
+    utmMedium = parsed.utmMedium || "";
+    utmCampaign = parsed.utmCampaign || "";
+    accountParam = parsed.account || "";
+    uidParam = parsed.uid || "";
+    igParam = parsed.ig || "";
   } catch {
     // ignore
   }
 
   if (error || !code) {
-    return c.html(errorPage(error || 'Authorization failed'));
+    return c.html(errorPage(error || "Authorization failed"));
   }
 
   try {
@@ -649,11 +737,11 @@ liffRoutes.get('/auth/callback', async (c) => {
     }
 
     // Exchange code for tokens
-    const tokenRes = await fetch('https://api.line.me/oauth2/v2.1/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    const tokenRes = await fetch("https://api.line.me/oauth2/v2.1/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
-        grant_type: 'authorization_code',
+        grant_type: "authorization_code",
         code,
         redirect_uri: callbackUrl,
         client_id: loginChannelId,
@@ -663,8 +751,8 @@ liffRoutes.get('/auth/callback', async (c) => {
 
     if (!tokenRes.ok) {
       const errText = await tokenRes.text();
-      console.error('Token exchange failed:', errText);
-      return c.html(errorPage('Token exchange failed'));
+      console.error("Token exchange failed:", errText);
+      return c.html(errorPage("Token exchange failed"));
     }
 
     const tokens = await tokenRes.json<{
@@ -674,9 +762,9 @@ liffRoutes.get('/auth/callback', async (c) => {
     }>();
 
     // Verify ID token to get sub (use resolved login channel ID, not env default)
-    const verifyRes = await fetch('https://api.line.me/oauth2/v2.1/verify', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    const verifyRes = await fetch("https://api.line.me/oauth2/v2.1/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
         id_token: tokens.id_token,
         client_id: loginChannelId,
@@ -684,7 +772,7 @@ liffRoutes.get('/auth/callback', async (c) => {
     });
 
     if (!verifyRes.ok) {
-      return c.html(errorPage('ID token verification failed'));
+      return c.html(errorPage("ID token verification failed"));
     }
 
     const verified = await verifyRes.json<{
@@ -695,11 +783,11 @@ liffRoutes.get('/auth/callback', async (c) => {
     }>();
 
     // Get profile via access token
-    const profileRes = await fetch('https://api.line.me/v2/profile', {
+    const profileRes = await fetch("https://api.line.me/v2/profile", {
       headers: { Authorization: `Bearer ${tokens.access_token}` },
     });
 
-    let displayName = verified.name || 'Unknown';
+    let displayName = verified.name || "Unknown";
     let pictureUrl: string | null = null;
     if (profileRes.ok) {
       const profile = await profileRes.json<{
@@ -714,12 +802,21 @@ liffRoutes.get('/auth/callback', async (c) => {
     const db = c.env.DB;
     const lineUserId = verified.sub;
 
+    // Resolve the friend's owning LINE account from the OAuth context so
+    // upsertFriend can wire friend.line_account_id. Without this, /auth/callback
+    // would leave existing friends with their previous (or NULL) account,
+    // re-creating the DEV→PROD scenario leakage class of bug.
+    const resolvedLineAccountId = accountParam
+      ? ((await getLineAccountByChannelId(db, accountParam))?.id ?? null)
+      : null;
+
     // Upsert friend (may not exist yet if webhook hasn't fired)
     const friend = await upsertFriend(db, {
       lineUserId,
       displayName,
       pictureUrl,
       statusMessage: null,
+      lineAccountId: resolvedLineAccountId,
     });
 
     // IG cross-platform UUID linkage (OAuth path — new friends & returning users
@@ -731,7 +828,8 @@ liffRoutes.get('/auth/callback', async (c) => {
     let userId: string | null = null;
 
     // Check if already linked
-    const existingUserId = (friend as unknown as Record<string, unknown>).user_id as string | null;
+    const existingUserId = (friend as unknown as Record<string, unknown>)
+      .user_id as string | null;
     if (existingUserId) {
       userId = existingUserId;
     } else {
@@ -761,10 +859,12 @@ liffRoutes.get('/auth/callback', async (c) => {
 
     // Attribution tracking
     // xh: refs are X Harness one-time tokens (the token IS the secret) — never persist as ref_code
-    if (ref && !ref.startsWith('xh:')) {
+    if (ref && !ref.startsWith("xh:")) {
       // Save ref_code on the friend record (first touch wins — only set if not already set)
       await db
-        .prepare(`UPDATE friends SET ref_code = ? WHERE id = ? AND ref_code IS NULL`)
+        .prepare(
+          `UPDATE friends SET ref_code = ? WHERE id = ? AND ref_code IS NULL`,
+        )
         .bind(ref, friend.id)
         .run();
 
@@ -784,8 +884,8 @@ liffRoutes.get('/auth/callback', async (c) => {
         utmSource: utmSource || null,
         utmMedium: utmMedium || null,
         utmCampaign: utmCampaign || null,
-        userAgent: c.req.header('User-Agent') || null,
-        ipAddress: c.req.header('CF-Connecting-IP') || null,
+        userAgent: c.req.header("User-Agent") || null,
+        ipAddress: c.req.header("CF-Connecting-IP") || null,
       });
 
       await applyRefAttribution(c, ref, friend, lineUserId, {
@@ -805,40 +905,47 @@ liffRoutes.get('/auth/callback', async (c) => {
 
     if (Object.keys(adMeta).length > 0) {
       const existingMeta = await db
-        .prepare('SELECT metadata FROM friends WHERE id = ?')
+        .prepare("SELECT metadata FROM friends WHERE id = ?")
         .bind(friend.id)
         .first<{ metadata: string }>();
-      const merged = { ...JSON.parse(existingMeta?.metadata || '{}'), ...adMeta };
+      const merged = {
+        ...JSON.parse(existingMeta?.metadata || "{}"),
+        ...adMeta,
+      };
       await db
-        .prepare('UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?')
+        .prepare("UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?")
         .bind(JSON.stringify(merged), jstNow(), friend.id)
         .run();
     }
 
     // X Harness token resolution: ref starting with "xh:" links X account to LINE friend
-    if (ref && ref.startsWith('xh:')) {
+    if (ref && ref.startsWith("xh:")) {
       try {
         const xhToken = ref.slice(3);
         const xhResult = await resolveXHarnessToken(xhToken, c.env);
         if (xhResult?.xUsername) {
           const existingMeta = await db
-            .prepare('SELECT metadata FROM friends WHERE id = ?')
+            .prepare("SELECT metadata FROM friends WHERE id = ?")
             .bind(friend.id)
             .first<{ metadata: string }>();
-          const meta = JSON.parse(existingMeta?.metadata || '{}');
+          const meta = JSON.parse(existingMeta?.metadata || "{}");
           meta.x_username = xhResult.xUsername;
           await db
-            .prepare('UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?')
+            .prepare(
+              "UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?",
+            )
             .bind(JSON.stringify(meta), jstNow(), friend.id)
             .run();
-          console.log(`X Harness: linked @${xhResult.xUsername} to friend ${friend.id}`);
+          console.log(
+            `X Harness: linked @${xhResult.xUsername} to friend ${friend.id}`,
+          );
         }
         // Apply gate actions (tag + scenario) from X Harness
         if (xhResult) {
           await applyXHarnessActions(db, friend.id, xhResult);
         }
       } catch (err) {
-        console.error('X Harness token resolution error (non-blocking):', err);
+        console.error("X Harness token resolution error (non-blocking):", err);
       }
     }
 
@@ -846,18 +953,26 @@ liffRoutes.get('/auth/callback', async (c) => {
     // Skip entirely when the referral link explicitly overrides account-level
     // friend_add scenarios (entry_routes.run_account_friend_add_scenarios = 0).
     const referralRouteForOverride =
-      ref && !ref.startsWith('xh:') ? await getEntryRouteByRefCode(db, ref) : null;
+      ref && !ref.startsWith("xh:")
+        ? await getEntryRouteByRefCode(db, ref)
+        : null;
     const runAccountScenariosLiff =
-      !referralRouteForOverride || referralRouteForOverride.run_account_friend_add_scenarios !== 0;
+      !referralRouteForOverride ||
+      referralRouteForOverride.run_account_friend_add_scenarios !== 0;
 
     try {
-      const { getScenarios, enrollFriendInScenario: enroll, getScenarioSteps } = await import('@line-crm/db');
-      const { LineClient } = await import('@line-crm/line-sdk');
-      const { buildMessage, expandVariables } = await import('../services/step-delivery.js');
+      const {
+        getScenarios,
+        enrollFriendInScenario: enroll,
+        getScenarioSteps,
+      } = await import("@line-crm/db");
+      const { LineClient } = await import("@line-crm/line-sdk");
+      const { buildMessage, expandVariables } =
+        await import("../services/step-delivery.js");
 
       // Resolve which account this friend belongs to
       const matchedAccountId = accountParam
-        ? (await getLineAccountByChannelId(db, accountParam))?.id ?? null
+        ? ((await getLineAccountByChannelId(db, accountParam))?.id ?? null)
         : null;
 
       // Get access token for this account
@@ -872,11 +987,22 @@ liffRoutes.get('/auth/callback', async (c) => {
         computeNextDeliveryAt: computeNextLiff,
         resolveStepContent: resolveStepLiff,
         addTagToFriend: addTagLiff,
-      } = await import('@line-crm/db');
+      } = await import("@line-crm/db");
       const scenarios = runAccountScenariosLiff ? await getScenarios(db) : [];
       for (const scenario of scenarios) {
-        const scenarioAccountMatch = !scenario.line_account_id || !matchedAccountId || scenario.line_account_id === matchedAccountId;
-        if (scenario.trigger_type === 'friend_add' && scenario.is_active && scenarioAccountMatch) {
+        // friend.line_account_id was just wired by upsertFriend (resolvedLineAccountId)
+        // above; prefer it over matchedAccountId so the guard semantics match
+        // the defense-in-depth check inside enrollFriendInScenario.
+        const scenarioAccountMatch = scenarioMatchesAccount(
+          scenario.line_account_id,
+          (friend as unknown as { line_account_id?: string | null })
+            .line_account_id ?? matchedAccountId,
+        );
+        if (
+          scenario.trigger_type === "friend_add" &&
+          scenario.is_active &&
+          scenarioAccountMatch
+        ) {
           const enrollment = await enroll(db, friend.id, scenario.id);
           if (enrollment) {
             // 即時送信は scenario.delivery_mode を踏まえて「now 以前にスケジュールされる」場合のみ。
@@ -886,28 +1012,46 @@ liffRoutes.get('/auth/callback', async (c) => {
             if (firstStep) {
               const enrolledAtJst = new Date(Date.now() + 9 * 60 * 60_000);
               const firstScheduledAt = computeNextLiff(
-                { delivery_mode: scenario.delivery_mode ?? 'relative' },
+                { delivery_mode: scenario.delivery_mode ?? "relative" },
                 firstStep,
-                { enrolledAt: enrolledAtJst, previousDeliveredAt: enrolledAtJst, now: enrolledAtJst },
+                {
+                  enrolledAt: enrolledAtJst,
+                  previousDeliveredAt: enrolledAtJst,
+                  now: enrolledAtJst,
+                },
               );
               if (firstScheduledAt.getTime() <= enrolledAtJst.getTime()) {
                 // Resolve template_id → templates table (参照型)
                 const resolved = await resolveStepLiff(db, firstStep);
-                const { resolveMetadata: resolveMetaLiff, messageToLogPayload } = await import('../services/step-delivery.js');
-                const resolvedMetaLiff = await resolveMetaLiff(db, { user_id: (friend as unknown as Record<string, string | null>).user_id, metadata: (friend as unknown as Record<string, string | null>).metadata });
+                const {
+                  resolveMetadata: resolveMetaLiff,
+                  messageToLogPayload,
+                } = await import("../services/step-delivery.js");
+                const resolvedMetaLiff = await resolveMetaLiff(db, {
+                  user_id: (friend as unknown as Record<string, string | null>)
+                    .user_id,
+                  metadata: (friend as unknown as Record<string, string | null>)
+                    .metadata,
+                });
                 const expandedContent = expandVariables(
                   resolved.messageContent,
-                  { ...friend, metadata: resolvedMetaLiff } as Parameters<typeof expandVariables>[1],
+                  { ...friend, metadata: resolvedMetaLiff } as Parameters<
+                    typeof expandVariables
+                  >[1],
                   c.env.WORKER_URL,
                 );
-                const pushedMessage = buildMessage(resolved.messageType, expandedContent);
+                const pushedMessage = buildMessage(
+                  resolved.messageType,
+                  expandedContent,
+                );
                 await lineClient.pushMessage(lineUserId, [pushedMessage]);
 
                 // messages_log への記録 (到達率分母に含めるため)
                 const oauthLogPayload = messageToLogPayload(pushedMessage);
-                const nowIso = new Date(Date.now() + 9 * 60 * 60_000)
-                  .toISOString()
-                  .slice(0, -1) + '+09:00';
+                const nowIso =
+                  new Date(Date.now() + 9 * 60 * 60_000)
+                    .toISOString()
+                    .slice(0, -1) + "+09:00";
                 await db
                   .prepare(
                     `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, template_id_at_send, created_at)
@@ -929,7 +1073,10 @@ liffRoutes.get('/auth/callback', async (c) => {
                   try {
                     await addTagLiff(db, friend.id, firstStep.on_reach_tag_id);
                   } catch (err) {
-                    console.error(`[scenario] tag attach failed step=${firstStep.id}:`, err);
+                    console.error(
+                      `[scenario] tag attach failed step=${firstStep.id}:`,
+                      err,
+                    );
                   }
                 }
               }
@@ -938,7 +1085,7 @@ liffRoutes.get('/auth/callback', async (c) => {
         }
       }
     } catch (err) {
-      console.error('OAuth scenario enrollment error:', err);
+      console.error("OAuth scenario enrollment error:", err);
     }
 
     // Redirect or show completion
@@ -956,27 +1103,31 @@ liffRoutes.get('/auth/callback', async (c) => {
         // xh: refs are X Harness one-time secret tokens — never put them on
         // liff.line.me URLs (third-party host). The same filter is applied
         // elsewhere in this file for QR codes / external LIFF URLs.
-        const externalRefForForm = ref && !ref.startsWith('xh:') ? ref : '';
+        const externalRefForForm = ref && !ref.startsWith("xh:") ? ref : "";
         const formQuery = new URLSearchParams();
-        formQuery.set('page', 'form');
-        formQuery.set('id', formId);
-        if (externalRefForForm) formQuery.set('ref', externalRefForForm);
-        if (gateParam) formQuery.set('gate', gateParam);
-        if (xhParam) formQuery.set('xh', xhParam);
+        formQuery.set("page", "form");
+        formQuery.set("id", formId);
+        if (externalRefForForm) formQuery.set("ref", externalRefForForm);
+        if (gateParam) formQuery.set("gate", gateParam);
+        if (xhParam) formQuery.set("xh", xhParam);
         let formLiffUrl = `${new URL(c.req.url).origin}?${formQuery.toString()}`;
-        const { LineClient } = await import('@line-crm/line-sdk');
-        const { getLineAccountById: getAcctById } = await import('@line-crm/db');
+        const { LineClient } = await import("@line-crm/line-sdk");
+        const { getLineAccountById: getAcctById } =
+          await import("@line-crm/db");
         let accessToken = c.env.LINE_CHANNEL_ACCESS_TOKEN;
         if (friend.line_account_id) {
           const account = await getAcctById(db, friend.line_account_id);
-          if (account?.channel_access_token) accessToken = account.channel_access_token;
+          if (account?.channel_access_token)
+            accessToken = account.channel_access_token;
           if (account?.liff_id) {
             formLiffUrl = `https://liff.line.me/${account.liff_id}?${formQuery.toString()}`;
           }
         }
         if (formLiffUrl.startsWith(`${new URL(c.req.url).origin}`)) {
-          const envLiffUrl = c.env.LIFF_URL || '';
-          const envLiffIdMatch = envLiffUrl.match(/liff\.line\.me\/([0-9]+-[A-Za-z0-9]+)/);
+          const envLiffUrl = c.env.LIFF_URL || "";
+          const envLiffIdMatch = envLiffUrl.match(
+            /liff\.line\.me\/([0-9]+-[A-Za-z0-9]+)/,
+          );
           if (envLiffIdMatch) {
             formLiffUrl = `https://liff.line.me/${envLiffIdMatch[1]}?${formQuery.toString()}`;
           }
@@ -992,22 +1143,35 @@ liffRoutes.get('/auth/callback', async (c) => {
           const trackedLink = await getTrackedLinkById(db, ref);
           if (trackedLink) {
             try {
-              const { setFriendFirstTrackedLinkIfNull } = await import('@line-crm/db');
-              await setFriendFirstTrackedLinkIfNull(db, friend.id, trackedLink.id);
+              const { setFriendFirstTrackedLinkIfNull } =
+                await import("@line-crm/db");
+              await setFriendFirstTrackedLinkIfNull(
+                db,
+                friend.id,
+                trackedLink.id,
+              );
             } catch (e) {
-              console.error('setFriendFirstTrackedLinkIfNull failed (non-blocking):', e);
+              console.error(
+                "setFriendFirstTrackedLinkIfNull failed (non-blocking):",
+                e,
+              );
             }
             if (trackedLink.intro_template_id) {
-              introTemplate = await getMessageTemplateById(db, trackedLink.intro_template_id);
+              introTemplate = await getMessageTemplateById(
+                db,
+                trackedLink.intro_template_id,
+              );
             }
           }
         }
         const introMessage = buildIntroMessage(introTemplate, formLiffUrl);
 
         const lineClient = new LineClient(accessToken);
-        await lineClient.pushMessage(friend.line_user_id, [introMessage as any]);
+        await lineClient.pushMessage(friend.line_user_id, [
+          introMessage as any,
+        ]);
       } catch (err) {
-        console.error('Form link push error (non-blocking):', err);
+        console.error("Form link push error (non-blocking):", err);
       }
     }
 
@@ -1015,28 +1179,33 @@ liffRoutes.get('/auth/callback', async (c) => {
     // Find the LINE account by: account param, friend's account, or login channel ID
     let redirectAccount: Record<string, string> | null = null;
     if (accountParam) {
-      redirectAccount = await getLineAccountByChannelId(db, accountParam) as Record<string, string> | null;
+      redirectAccount = (await getLineAccountByChannelId(
+        db,
+        accountParam,
+      )) as Record<string, string> | null;
     }
     if (!redirectAccount) {
       // Find account by login_channel_id used in this OAuth flow
       redirectAccount = await db
-        .prepare('SELECT * FROM line_accounts WHERE login_channel_id = ?')
+        .prepare("SELECT * FROM line_accounts WHERE login_channel_id = ?")
         .bind(loginChannelId)
         .first<Record<string, string>>();
     }
     if (!redirectAccount) {
       // Fallback: first active account
       redirectAccount = await db
-        .prepare('SELECT * FROM line_accounts WHERE is_active = 1 LIMIT 1')
+        .prepare("SELECT * FROM line_accounts WHERE is_active = 1 LIMIT 1")
         .first<Record<string, string>>();
     }
     if (redirectAccount?.channel_access_token) {
       try {
-        const botInfo = await fetch('https://api.line.me/v2/bot/info', {
-          headers: { Authorization: `Bearer ${redirectAccount.channel_access_token}` },
+        const botInfo = await fetch("https://api.line.me/v2/bot/info", {
+          headers: {
+            Authorization: `Bearer ${redirectAccount.channel_access_token}`,
+          },
         });
         if (botInfo.ok) {
-          const bot = await botInfo.json() as { basicId?: string };
+          const bot = (await botInfo.json()) as { basicId?: string };
           if (bot.basicId) {
             return c.redirect(`https://line.me/R/ti/p/${bot.basicId}`);
           }
@@ -1047,42 +1216,43 @@ liffRoutes.get('/auth/callback', async (c) => {
     }
 
     return c.html(completionPage(displayName, pictureUrl, ref));
-
   } catch (err) {
-    console.error('Auth callback error:', err);
-    return c.html(errorPage('Internal error'));
+    console.error("Auth callback error:", err);
+    return c.html(errorPage("Internal error"));
   }
 });
 
 // ─── LIFF config endpoint ──────────────────────────────────────
 
 // GET /api/liff/config - resolve account info from LIFF ID (public, no auth)
-liffRoutes.get('/api/liff/config', async (c) => {
+liffRoutes.get("/api/liff/config", async (c) => {
   try {
-    const liffId = c.req.query('liffId');
+    const liffId = c.req.query("liffId");
     if (!liffId) {
-      return c.json({ success: false, error: 'liffId is required' }, 400);
+      return c.json({ success: false, error: "liffId is required" }, 400);
     }
 
-    const account = await c.env.DB
-      .prepare('SELECT id, name, channel_access_token FROM line_accounts WHERE liff_id = ? AND is_active = 1')
+    const account = await c.env.DB.prepare(
+      "SELECT id, name, channel_access_token FROM line_accounts WHERE liff_id = ? AND is_active = 1",
+    )
       .bind(liffId)
       .first<{ id: string; name: string; channel_access_token: string }>();
 
     // Fallback to default env account if liff_id not found in DB
-    const accessToken = account?.channel_access_token || c.env.LINE_CHANNEL_ACCESS_TOKEN;
-    const accountName = account?.name || 'Default';
-    const accountId = account?.id || 'default';
+    const accessToken =
+      account?.channel_access_token || c.env.LINE_CHANNEL_ACCESS_TOKEN;
+    const accountName = account?.name || "Default";
+    const accountId = account?.id || "default";
 
     // Fetch bot basic ID from LINE API
-    let botBasicId = '';
+    let botBasicId = "";
     try {
-      const botRes = await fetch('https://api.line.me/v2/bot/info', {
+      const botRes = await fetch("https://api.line.me/v2/bot/info", {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       if (botRes.ok) {
-        const bot = await botRes.json() as { basicId?: string };
-        botBasicId = bot.basicId || '';
+        const bot = (await botRes.json()) as { basicId?: string };
+        botBasicId = bot.basicId || "";
       }
     } catch {
       // non-blocking
@@ -1093,24 +1263,24 @@ liffRoutes.get('/api/liff/config', async (c) => {
       data: { botBasicId, accountName, accountId },
     });
   } catch (err) {
-    console.error('GET /api/liff/config error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    console.error("GET /api/liff/config error:", err);
+    return c.json({ success: false, error: "Internal server error" }, 500);
   }
 });
 
 // ─── Existing LIFF endpoints ────────────────────────────────────
 
 // POST /api/liff/profile - get friend by LINE userId (public, no auth)
-liffRoutes.post('/api/liff/profile', async (c) => {
+liffRoutes.post("/api/liff/profile", async (c) => {
   try {
     const body = await c.req.json<{ lineUserId: string }>();
     if (!body.lineUserId) {
-      return c.json({ success: false, error: 'lineUserId is required' }, 400);
+      return c.json({ success: false, error: "lineUserId is required" }, 400);
     }
 
     const friend = await getFriendByLineUserId(c.env.DB, body.lineUserId);
     if (!friend) {
-      return c.json({ success: false, error: 'Friend not found' }, 404);
+      return c.json({ success: false, error: "Friend not found" }, 404);
     }
 
     return c.json({
@@ -1123,13 +1293,13 @@ liffRoutes.post('/api/liff/profile', async (c) => {
       },
     });
   } catch (err) {
-    console.error('POST /api/liff/profile error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    console.error("POST /api/liff/profile error:", err);
+    return c.json({ success: false, error: "Internal server error" }, 500);
   }
 });
 
 // POST /api/liff/link - link friend to user UUID (public, verified via LINE ID token)
-liffRoutes.post('/api/liff/link', async (c) => {
+liffRoutes.post("/api/liff/link", async (c) => {
   try {
     const body = await c.req.json<{
       idToken: string;
@@ -1140,59 +1310,73 @@ liffRoutes.post('/api/liff/link', async (c) => {
     }>();
 
     if (!body.idToken) {
-      return c.json({ success: false, error: 'idToken is required' }, 400);
+      return c.json({ success: false, error: "idToken is required" }, 400);
     }
 
     // Try verifying with default Login channel, then DB accounts
     const loginChannelIds = [c.env.LINE_LOGIN_CHANNEL_ID];
     const dbAccounts = await getLineAccounts(c.env.DB);
     for (const acct of dbAccounts) {
-      if (acct.login_channel_id && !loginChannelIds.includes(acct.login_channel_id)) {
+      if (
+        acct.login_channel_id &&
+        !loginChannelIds.includes(acct.login_channel_id)
+      ) {
         loginChannelIds.push(acct.login_channel_id);
       }
     }
 
     let verifyRes: Response | null = null;
     for (const channelId of loginChannelIds) {
-      verifyRes = await fetch('https://api.line.me/oauth2/v2.1/verify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ id_token: body.idToken, client_id: channelId }),
+      verifyRes = await fetch("https://api.line.me/oauth2/v2.1/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          id_token: body.idToken,
+          client_id: channelId,
+        }),
       });
       if (verifyRes.ok) break;
     }
 
     if (!verifyRes?.ok) {
-      return c.json({ success: false, error: 'Invalid ID token' }, 401);
+      return c.json({ success: false, error: "Invalid ID token" }, 401);
     }
 
-    const verified = await verifyRes.json<{ sub: string; email?: string; name?: string }>();
+    const verified = await verifyRes.json<{
+      sub: string;
+      email?: string;
+      name?: string;
+    }>();
     const lineUserId = verified.sub;
     const email = verified.email || null;
 
     const db = c.env.DB;
     const friend = await getFriendByLineUserId(db, lineUserId);
     if (!friend) {
-      return c.json({ success: false, error: 'Friend not found' }, 404);
+      return c.json({ success: false, error: "Friend not found" }, 404);
     }
 
     // IG cross-link: runs regardless of already-linked vs new-link branch so
     // existing friends still get ig_igsid wired when they hit this endpoint
     // from a reward DM.
-    await linkIgIgsid(c, friend.id, body.ig || '');
+    await linkIgIgsid(c, friend.id, body.ig || "");
 
     if ((friend as unknown as Record<string, unknown>).user_id) {
       // Still save ref even if already linked (but never persist xh: tokens as ref_code)
-      if (body.ref && !body.ref.startsWith('xh:')) {
-        await db.prepare('UPDATE friends SET ref_code = ? WHERE id = ? AND ref_code IS NULL')
-          .bind(body.ref, friend.id).run();
+      if (body.ref && !body.ref.startsWith("xh:")) {
+        await db
+          .prepare(
+            "UPDATE friends SET ref_code = ? WHERE id = ? AND ref_code IS NULL",
+          )
+          .bind(body.ref, friend.id)
+          .run();
       }
       // Apply ref attribution (tag + scenario push) for already-linked friends.
       // /auth/callback only fires for new OAuth flows, so existing friends
       // would otherwise miss tracked-link campaigns triggered by /api/liff/link.
       // Mirror the new-link branch's recordRefTracking call so analytics
       // (/api/analytics/ref-summary) include LIFF hits from existing friends.
-      if (body.ref && !body.ref.startsWith('xh:')) {
+      if (body.ref && !body.ref.startsWith("xh:")) {
         try {
           const route = await getEntryRouteByRefCode(db, body.ref);
           await recordRefTracking(db, {
@@ -1201,39 +1385,49 @@ liffRoutes.post('/api/liff/link', async (c) => {
             entryRouteId: route?.id ?? null,
             sourceUrl: null,
           });
-        } catch { /* silent */ }
+        } catch {
+          /* silent */
+        }
       }
       if (body.ref) {
         await applyRefAttribution(c, body.ref, friend, lineUserId);
       }
       // X Harness token resolution for already-linked friends
-      if (body.ref && body.ref.startsWith('xh:')) {
+      if (body.ref && body.ref.startsWith("xh:")) {
         try {
           const xhToken = body.ref.slice(3);
           const xhResult = await resolveXHarnessToken(xhToken, c.env);
           if (xhResult?.xUsername) {
             const existingMeta = await db
-              .prepare('SELECT metadata FROM friends WHERE id = ?')
+              .prepare("SELECT metadata FROM friends WHERE id = ?")
               .bind(friend.id)
               .first<{ metadata: string }>();
-            const meta = JSON.parse(existingMeta?.metadata || '{}');
+            const meta = JSON.parse(existingMeta?.metadata || "{}");
             meta.x_username = xhResult.xUsername;
             await db
-              .prepare('UPDATE friends SET metadata = ? WHERE id = ?')
+              .prepare("UPDATE friends SET metadata = ? WHERE id = ?")
               .bind(JSON.stringify(meta), friend.id)
               .run();
-            console.log(`X Harness: linked @${xhResult.xUsername} to friend ${friend.id}`);
+            console.log(
+              `X Harness: linked @${xhResult.xUsername} to friend ${friend.id}`,
+            );
           }
           if (xhResult) {
             await applyXHarnessActions(db, friend.id, xhResult);
           }
         } catch (err) {
-          console.error('X Harness token resolution error (non-blocking):', err);
+          console.error(
+            "X Harness token resolution error (non-blocking):",
+            err,
+          );
         }
       }
       return c.json({
         success: true,
-        data: { userId: (friend as unknown as Record<string, unknown>).user_id, alreadyLinked: true },
+        data: {
+          userId: (friend as unknown as Record<string, unknown>).user_id,
+          alreadyLinked: true,
+        },
       });
     }
 
@@ -1255,9 +1449,13 @@ liffRoutes.post('/api/liff/link', async (c) => {
 
     // Save ref_code from LIFF (first touch wins)
     // xh: refs are X Harness one-time tokens — never persist as ref_code
-    if (body.ref && !body.ref.startsWith('xh:')) {
-      await db.prepare('UPDATE friends SET ref_code = ? WHERE id = ? AND ref_code IS NULL')
-        .bind(body.ref, friend.id).run();
+    if (body.ref && !body.ref.startsWith("xh:")) {
+      await db
+        .prepare(
+          "UPDATE friends SET ref_code = ? WHERE id = ? AND ref_code IS NULL",
+        )
+        .bind(body.ref, friend.id)
+        .run();
 
       // Record ref tracking
       try {
@@ -1268,35 +1466,39 @@ liffRoutes.post('/api/liff/link', async (c) => {
           entryRouteId: route?.id ?? null,
           sourceUrl: null,
         });
-      } catch { /* silent */ }
+      } catch {
+        /* silent */
+      }
 
       // Apply ref attribution (tag + scenario push) for newly-linked friends
       await applyRefAttribution(c, body.ref, friend, lineUserId);
     }
 
     // X Harness token resolution: ref starting with "xh:" links X account to LINE friend
-    if (body.ref && body.ref.startsWith('xh:')) {
+    if (body.ref && body.ref.startsWith("xh:")) {
       try {
         const xhToken = body.ref.slice(3);
         const xhResult = await resolveXHarnessToken(xhToken, c.env);
         if (xhResult?.xUsername) {
           const existingMeta = await db
-            .prepare('SELECT metadata FROM friends WHERE id = ?')
+            .prepare("SELECT metadata FROM friends WHERE id = ?")
             .bind(friend.id)
             .first<{ metadata: string }>();
-          const meta = JSON.parse(existingMeta?.metadata || '{}');
+          const meta = JSON.parse(existingMeta?.metadata || "{}");
           meta.x_username = xhResult.xUsername;
           await db
-            .prepare('UPDATE friends SET metadata = ? WHERE id = ?')
+            .prepare("UPDATE friends SET metadata = ? WHERE id = ?")
             .bind(JSON.stringify(meta), friend.id)
             .run();
-          console.log(`X Harness: linked @${xhResult.xUsername} to friend ${friend.id}`);
+          console.log(
+            `X Harness: linked @${xhResult.xUsername} to friend ${friend.id}`,
+          );
         }
         if (xhResult) {
           await applyXHarnessActions(db, friend.id, xhResult);
         }
       } catch (err) {
-        console.error('X Harness token resolution error (non-blocking):', err);
+        console.error("X Harness token resolution error (non-blocking):", err);
       }
     }
 
@@ -1305,8 +1507,8 @@ liffRoutes.post('/api/liff/link', async (c) => {
       data: { userId, alreadyLinked: false },
     });
   } catch (err) {
-    console.error('POST /api/liff/link error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    console.error("POST /api/liff/link error:", err);
+    return c.json({ success: false, error: "Internal server error" }, 500);
   }
 });
 
@@ -1315,11 +1517,11 @@ liffRoutes.post('/api/liff/link', async (c) => {
 /**
  * GET /api/analytics/ref-summary — ref code analytics summary
  */
-liffRoutes.get('/api/analytics/ref-summary', async (c) => {
+liffRoutes.get("/api/analytics/ref-summary", async (c) => {
   try {
     const db = c.env.DB;
-    const lineAccountId = c.req.query('lineAccountId');
-    const accountFilter = lineAccountId ? 'AND f.line_account_id = ?' : '';
+    const lineAccountId = c.req.query("lineAccountId");
+    const accountFilter = lineAccountId ? "AND f.line_account_id = ?" : "";
     const accountBinds = lineAccountId ? [lineAccountId] : [];
 
     // friends 起点で集計することで、entry_routes に登録されていない ref
@@ -1338,7 +1540,7 @@ liffRoutes.get('/api/analytics/ref-summary', async (c) => {
         LEFT JOIN entry_routes er ON er.ref_code = f.ref_code
         LEFT JOIN ref_tracking rt ON rt.ref_code = f.ref_code AND rt.friend_id = f.id
         WHERE f.ref_code IS NOT NULL AND f.ref_code != ''
-          ${accountFilter ? `${accountFilter}` : ''}
+          ${accountFilter ? `${accountFilter}` : ""}
         GROUP BY f.ref_code, er.name
         ORDER BY friend_count DESC`,
       )
@@ -1352,13 +1554,23 @@ liffRoutes.get('/api/analytics/ref-summary', async (c) => {
       }>();
 
     const totalStmt = lineAccountId
-      ? db.prepare(`SELECT COUNT(*) as count FROM friends WHERE line_account_id = ?`).bind(lineAccountId)
+      ? db
+          .prepare(
+            `SELECT COUNT(*) as count FROM friends WHERE line_account_id = ?`,
+          )
+          .bind(lineAccountId)
       : db.prepare(`SELECT COUNT(*) as count FROM friends`);
     const totalFriendsRes = await totalStmt.first<{ count: number }>();
 
     const refStmt = lineAccountId
-      ? db.prepare(`SELECT COUNT(*) as count FROM friends WHERE ref_code IS NOT NULL AND ref_code != '' AND line_account_id = ?`).bind(lineAccountId)
-      : db.prepare(`SELECT COUNT(*) as count FROM friends WHERE ref_code IS NOT NULL AND ref_code != ''`);
+      ? db
+          .prepare(
+            `SELECT COUNT(*) as count FROM friends WHERE ref_code IS NOT NULL AND ref_code != '' AND line_account_id = ?`,
+          )
+          .bind(lineAccountId)
+      : db.prepare(
+          `SELECT COUNT(*) as count FROM friends WHERE ref_code IS NOT NULL AND ref_code != ''`,
+        );
     const friendsWithRefRes = await refStmt.first<{ count: number }>();
 
     const totalFriends = totalFriendsRes?.count ?? 0;
@@ -1380,18 +1592,18 @@ liffRoutes.get('/api/analytics/ref-summary', async (c) => {
       },
     });
   } catch (err) {
-    console.error('GET /api/analytics/ref-summary error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    console.error("GET /api/analytics/ref-summary error:", err);
+    return c.json({ success: false, error: "Internal server error" }, 500);
   }
 });
 
 /**
  * GET /api/analytics/ref/:refCode — detailed friend list for a single ref code
  */
-liffRoutes.get('/api/analytics/ref/:refCode', async (c) => {
+liffRoutes.get("/api/analytics/ref/:refCode", async (c) => {
   try {
     const db = c.env.DB;
-    const refCode = c.req.param('refCode');
+    const refCode = c.req.param("refCode");
 
     // Look up the registered entry_route to surface the operator-facing name,
     // but do NOT 404 when missing. /inflow-links surfaces refs that exist in
@@ -1403,9 +1615,11 @@ liffRoutes.get('/api/analytics/ref/:refCode', async (c) => {
       .bind(refCode)
       .first<{ ref_code: string; name: string }>();
 
-    const lineAccountId = c.req.query('lineAccountId');
-    const accountFilter = lineAccountId ? 'AND f.line_account_id = ?' : '';
-    const binds = lineAccountId ? [refCode, refCode, lineAccountId] : [refCode, refCode];
+    const lineAccountId = c.req.query("lineAccountId");
+    const accountFilter = lineAccountId ? "AND f.line_account_id = ?" : "";
+    const binds = lineAccountId
+      ? [refCode, refCode, lineAccountId]
+      : [refCode, refCode];
 
     const friends = await db
       .prepare(
@@ -1440,34 +1654,34 @@ liffRoutes.get('/api/analytics/ref/:refCode', async (c) => {
       },
     });
   } catch (err) {
-    console.error('GET /api/analytics/ref/:refCode error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    console.error("GET /api/analytics/ref/:refCode error:", err);
+    return c.json({ success: false, error: "Internal server error" }, 500);
   }
 });
 
 // POST /api/links/wrap - wrap a URL with LIFF redirect proxy
-liffRoutes.post('/api/links/wrap', async (c) => {
+liffRoutes.post("/api/links/wrap", async (c) => {
   try {
     const body = await c.req.json<{ url: string; ref?: string }>();
     if (!body.url) {
-      return c.json({ success: false, error: 'url is required' }, 400);
+      return c.json({ success: false, error: "url is required" }, 400);
     }
 
     const liffUrl = c.env.LIFF_URL;
     if (!liffUrl) {
-      return c.json({ success: false, error: 'LIFF_URL not configured' }, 500);
+      return c.json({ success: false, error: "LIFF_URL not configured" }, 500);
     }
 
     const params = new URLSearchParams({ redirect: body.url });
     if (body.ref) {
-      params.set('ref', body.ref);
+      params.set("ref", body.ref);
     }
 
     const wrappedUrl = `${liffUrl}?${params.toString()}`;
     return c.json({ success: true, data: { url: wrappedUrl } });
   } catch (err) {
-    console.error('POST /api/links/wrap error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    console.error("POST /api/links/wrap error:", err);
+    return c.json({ success: false, error: "Internal server error" }, 500);
   }
 });
 
@@ -1476,10 +1690,10 @@ liffRoutes.post('/api/links/wrap', async (c) => {
 function authLandingPage(liffUrl: string, oauthUrl: string): string {
   // Extract LIFF ID from URL like https://liff.line.me/{LIFF_ID}?ref=test
   const liffIdMatch = liffUrl.match(/liff\.line\.me\/([^?]+)/);
-  const liffId = liffIdMatch ? liffIdMatch[1] : '';
+  const liffId = liffIdMatch ? liffIdMatch[1] : "";
   // Query string part (e.g., ?ref=test)
-  const qsIndex = liffUrl.indexOf('?');
-  const liffQs = qsIndex >= 0 ? liffUrl.slice(qsIndex) : '';
+  const qsIndex = liffUrl.indexOf("?");
+  const liffQs = qsIndex >= 0 ? liffUrl.slice(qsIndex) : "";
 
   // line:// scheme to force open LINE app with LIFF
   const lineSchemeUrl = `https://line.me/R/app/${liffId}${liffQs}`;
@@ -1548,7 +1762,11 @@ function authLandingPage(liffUrl: string, oauthUrl: string): string {
 </html>`;
 }
 
-function completionPage(displayName: string, pictureUrl: string | null, ref: string): string {
+function completionPage(
+  displayName: string,
+  pictureUrl: string | null,
+  ref: string,
+): string {
   return `<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -1573,11 +1791,11 @@ function completionPage(displayName: string, pictureUrl: string | null, ref: str
     <div class="check">✓</div>
     <h2>登録完了！</h2>
     <div class="profile">
-      ${pictureUrl ? `<img src="${pictureUrl}" alt="">` : ''}
+      ${pictureUrl ? `<img src="${pictureUrl}" alt="">` : ""}
       <p class="name">${escapeHtml(displayName)} さん</p>
     </div>
     <p class="message">ありがとうございます！<br>これからお役立ち情報をお届けします。<br>このページは閉じて大丈夫です。</p>
-    ${ref ? `<p class="ref">${escapeHtml(ref)}</p>` : ''}
+    ${ref ? `<p class="ref">${escapeHtml(ref)}</p>` : ""}
   </div>
 </body>
 </html>`;
@@ -1608,7 +1826,11 @@ function errorPage(message: string): string {
 }
 
 function escapeHtml(str: string): string {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 // ─── X Harness Token Resolution ─────────────────────────────────
@@ -1627,21 +1849,25 @@ async function applyXHarnessActions(
     try {
       // Find or create the tag by name
       let tagRow = await db
-        .prepare('SELECT id FROM tags WHERE name = ?')
+        .prepare("SELECT id FROM tags WHERE name = ?")
         .bind(result.tag)
         .first<{ id: string }>();
       if (!tagRow) {
         const tagId = crypto.randomUUID();
-        const { jstNow } = await import('@line-crm/db');
+        const { jstNow } = await import("@line-crm/db");
         tagRow = await db
-          .prepare('INSERT INTO tags (id, name, created_at) VALUES (?, ?, ?) RETURNING id')
+          .prepare(
+            "INSERT INTO tags (id, name, created_at) VALUES (?, ?, ?) RETURNING id",
+          )
           .bind(tagId, result.tag, jstNow())
           .first<{ id: string }>();
       }
       if (tagRow) {
-        const { addTagToFriend } = await import('@line-crm/db');
+        const { addTagToFriend } = await import("@line-crm/db");
         await addTagToFriend(db, friendId, tagRow.id);
-        console.log(`X Harness: added tag "${result.tag}" to friend ${friendId}`);
+        console.log(
+          `X Harness: added tag "${result.tag}" to friend ${friendId}`,
+        );
       }
     } catch (err) {
       console.error(`X Harness: failed to add tag "${result.tag}":`, err);
@@ -1651,9 +1877,38 @@ async function applyXHarnessActions(
   // Start scenario if specified
   if (result.scenarioId) {
     try {
-      const { enrollFriendInScenario } = await import('@line-crm/db');
-      await enrollFriendInScenario(db, friendId, result.scenarioId);
-      console.log(`X Harness: enrolled friend ${friendId} in scenario ${result.scenarioId}`);
+      const {
+        enrollFriendInScenario,
+        getFriendById,
+        scenarioMatchesAccount: scenarioMatchesAccountXh,
+      } = await import("@line-crm/db");
+      // Account-scope guard: X Harness gates are admin-configured and could
+      // point at a scenario on a different LINE account than the friend that
+      // hit the gate. Block leakage explicitly so the warn surfaces the
+      // misconfiguration instead of silently delivering across accounts.
+      const scenarioId = result.scenarioId;
+      const [friend, scenarioRow] = await Promise.all([
+        getFriendById(db, friendId),
+        db
+          .prepare(`SELECT line_account_id FROM scenarios WHERE id = ?`)
+          .bind(scenarioId)
+          .first<{ line_account_id: string | null }>(),
+      ]);
+      if (
+        !scenarioMatchesAccountXh(
+          scenarioRow?.line_account_id,
+          friend?.line_account_id,
+        )
+      ) {
+        console.warn(
+          `[account-scope] BLOCKED X Harness → scenario=${scenarioId} (scenario.account=${scenarioRow?.line_account_id}, friend=${friendId}.account=${friend?.line_account_id})`,
+        );
+        return;
+      }
+      await enrollFriendInScenario(db, friendId, scenarioId);
+      console.log(
+        `X Harness: enrolled friend ${friendId} in scenario ${scenarioId}`,
+      );
     } catch (err) {
       console.error(`X Harness: failed to enroll in scenario:`, err);
     }
@@ -1679,14 +1934,24 @@ async function resolveXHarnessToken(
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout — must not block login flow
     try {
-      const res = await fetch(`${env.X_HARNESS_URL}/api/tokens/${token}/resolve`, {
-        headers: { 'Content-Type': 'application/json' },
-        signal: controller.signal,
-      });
+      const res = await fetch(
+        `${env.X_HARNESS_URL}/api/tokens/${token}/resolve`,
+        {
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+        },
+      );
       if (!res.ok) return null;
-      const body = await res.json() as { success: boolean; data?: XHarnessTokenResult };
+      const body = (await res.json()) as {
+        success: boolean;
+        data?: XHarnessTokenResult;
+      };
       if (!body.success || !body.data) return null;
-      return { xUsername: body.data.xUsername, tag: body.data.tag ?? null, scenarioId: body.data.scenarioId ?? null };
+      return {
+        xUsername: body.data.xUsername,
+        tag: body.data.tag ?? null,
+        scenarioId: body.data.scenarioId ?? null,
+      };
     } finally {
       clearTimeout(timeoutId);
     }
@@ -1697,19 +1962,23 @@ async function resolveXHarnessToken(
 
 // POST /api/liff/send-form-link — send form URL as push message (public, used by LIFF)
 // Security: requires idToken to verify the caller is the actual LINE user
-liffRoutes.post('/api/liff/send-form-link', async (c) => {
+liffRoutes.post("/api/liff/send-form-link", async (c) => {
   try {
-    const { lineUserId, formId, idToken, ref, gate, xh, ig } = await c.req.json<{
-      lineUserId: string;
-      formId: string;
-      idToken?: string;
-      ref?: string;
-      gate?: string;
-      xh?: string;
-      ig?: string;
-    }>();
+    const { lineUserId, formId, idToken, ref, gate, xh, ig } =
+      await c.req.json<{
+        lineUserId: string;
+        formId: string;
+        idToken?: string;
+        ref?: string;
+        gate?: string;
+        xh?: string;
+        ig?: string;
+      }>();
     if (!lineUserId || !formId) {
-      return c.json({ success: false, error: 'lineUserId and formId required' }, 400);
+      return c.json(
+        { success: false, error: "lineUserId and formId required" },
+        400,
+      );
     }
     // idToken is required: this endpoint pins friend.first_tracked_link_id and
     // pushes a campaign-specific message, so we must verify the caller IS the
@@ -1717,7 +1986,7 @@ liffRoutes.post('/api/liff/send-form-link', async (c) => {
     // who knows another user's lineUserId could lock that user into an
     // attacker-chosen tracked_link_id (and thus an attacker-chosen reward).
     if (!idToken) {
-      return c.json({ success: false, error: 'idToken required' }, 401);
+      return c.json({ success: false, error: "idToken required" }, 401);
     }
 
     // Verify idToken — ensures caller is the actual user
@@ -1729,34 +1998,40 @@ liffRoutes.post('/api/liff/send-form-link', async (c) => {
       }
       let verified = false;
       for (const channelId of loginChannelIds) {
-        const verifyRes = await fetch('https://api.line.me/oauth2/v2.1/verify', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams({ id_token: idToken, client_id: channelId }),
-        });
+        const verifyRes = await fetch(
+          "https://api.line.me/oauth2/v2.1/verify",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+              id_token: idToken,
+              client_id: channelId,
+            }),
+          },
+        );
         if (verifyRes.ok) {
-          const data = await verifyRes.json() as { sub: string };
+          const data = (await verifyRes.json()) as { sub: string };
           if (data.sub !== lineUserId) {
-            return c.json({ success: false, error: 'Token mismatch' }, 403);
+            return c.json({ success: false, error: "Token mismatch" }, 403);
           }
           verified = true;
           break;
         }
       }
       if (!verified) {
-        return c.json({ success: false, error: 'Invalid idToken' }, 401);
+        return c.json({ success: false, error: "Invalid idToken" }, 401);
       }
     }
 
     const db = c.env.DB;
     const friend = await getFriendByLineUserId(db, lineUserId);
     if (!friend) {
-      return c.json({ success: false, error: 'Friend not found' }, 404);
+      return c.json({ success: false, error: "Friend not found" }, 404);
     }
 
     // IG cross-link for LIFF flows that hit this endpoint (existing friends
     // tapping a reward DM URL).
-    await linkIgIgsid(c, friend.id, ig || '');
+    await linkIgIgsid(c, friend.id, ig || "");
 
     // Build form LIFF URL using the friend's account liff_id (multi-account aware)
     // Append gate/xh so the form can verify against the correct campaign gate
@@ -1764,27 +2039,33 @@ liffRoutes.post('/api/liff/send-form-link', async (c) => {
     // URL is unreliable as a source of gate id).
     // xh: refs are X Harness one-time secret tokens — never put them on
     // liff.line.me URLs (third-party host).
-    const externalRefForForm = ref && !ref.startsWith('xh:') ? ref : '';
+    const externalRefForForm = ref && !ref.startsWith("xh:") ? ref : "";
     const formQuery = new URLSearchParams();
-    formQuery.set('page', 'form');
-    formQuery.set('id', formId);
-    if (externalRefForForm) formQuery.set('ref', externalRefForForm);
-    if (gate) formQuery.set('gate', gate);
-    if (xh) formQuery.set('xh', xh);
+    formQuery.set("page", "form");
+    formQuery.set("id", formId);
+    if (externalRefForForm) formQuery.set("ref", externalRefForForm);
+    if (gate) formQuery.set("gate", gate);
+    if (xh) formQuery.set("xh", xh);
     let formLiffUrl = `${new URL(c.req.url).origin}?${formQuery.toString()}`;
-    const { LineClient } = await import('@line-crm/line-sdk');
+    const { LineClient } = await import("@line-crm/line-sdk");
     let accessToken = c.env.LINE_CHANNEL_ACCESS_TOKEN;
     if ((friend as any).line_account_id) {
-      const account = await getLineAccountById(db, (friend as any).line_account_id);
-      if (account?.channel_access_token) accessToken = account.channel_access_token;
+      const account = await getLineAccountById(
+        db,
+        (friend as any).line_account_id,
+      );
+      if (account?.channel_access_token)
+        accessToken = account.channel_access_token;
       if (account?.liff_id) {
         formLiffUrl = `https://liff.line.me/${account.liff_id}?${formQuery.toString()}`;
       }
     }
     if (formLiffUrl.startsWith(`${new URL(c.req.url).origin}`)) {
       // Fallback: use env LIFF_URL if no account-specific liff_id
-      const liffUrl = c.env.LIFF_URL || '';
-      const liffIdMatch = liffUrl.match(/liff\.line\.me\/([0-9]+-[A-Za-z0-9]+)/);
+      const liffUrl = c.env.LIFF_URL || "";
+      const liffIdMatch = liffUrl.match(
+        /liff\.line\.me\/([0-9]+-[A-Za-z0-9]+)/,
+      );
       if (liffIdMatch) {
         formLiffUrl = `https://liff.line.me/${liffIdMatch[1]}?${formQuery.toString()}`;
       }
@@ -1796,14 +2077,25 @@ liffRoutes.post('/api/liff/send-form-link', async (c) => {
       const trackedLink = await getTrackedLinkById(c.env.DB, ref);
       if (trackedLink) {
         try {
-          const { setFriendFirstTrackedLinkIfNull } = await import('@line-crm/db');
-          await setFriendFirstTrackedLinkIfNull(c.env.DB, friend.id, trackedLink.id);
+          const { setFriendFirstTrackedLinkIfNull } =
+            await import("@line-crm/db");
+          await setFriendFirstTrackedLinkIfNull(
+            c.env.DB,
+            friend.id,
+            trackedLink.id,
+          );
         } catch (e) {
-          console.error('setFriendFirstTrackedLinkIfNull failed (non-blocking):', e);
+          console.error(
+            "setFriendFirstTrackedLinkIfNull failed (non-blocking):",
+            e,
+          );
         }
       }
       if (trackedLink?.intro_template_id) {
-        introTemplate = await getMessageTemplateById(c.env.DB, trackedLink.intro_template_id);
+        introTemplate = await getMessageTemplateById(
+          c.env.DB,
+          trackedLink.intro_template_id,
+        );
       }
     }
     const introMessage = buildIntroMessage(introTemplate, formLiffUrl);
@@ -1813,8 +2105,8 @@ liffRoutes.post('/api/liff/send-form-link', async (c) => {
 
     return c.json({ success: true });
   } catch (err) {
-    console.error('POST /api/liff/send-form-link error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    console.error("POST /api/liff/send-form-link error:", err);
+    return c.json({ success: false, error: "Internal server error" }, 500);
   }
 });
 

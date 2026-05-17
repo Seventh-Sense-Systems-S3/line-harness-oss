@@ -223,6 +223,7 @@ async function handleEvent(
 
     const friend = await upsertFriend(db, {
       lineUserId: userId,
+      lineAccountId,
       displayName: profile?.displayName ?? null,
       pictureUrl: profile?.pictureUrl ?? null,
       statusMessage: profile?.statusMessage ?? null,

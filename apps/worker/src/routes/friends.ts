@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono } from "hono";
 import {
   getFriends,
   getFriendById,
@@ -9,11 +9,12 @@ import {
   getScenarios,
   enrollFriendInScenario,
   jstNow,
-} from '@line-crm/db';
-import type { Friend as DbFriend, Tag as DbTag } from '@line-crm/db';
-import { fireEvent } from '../services/event-bus.js';
-import { buildMessage } from '../services/step-delivery.js';
-import type { Env } from '../index.js';
+  scenarioMatchesAccount,
+} from "@line-crm/db";
+import type { Friend as DbFriend, Tag as DbTag } from "@line-crm/db";
+import { fireEvent } from "../services/event-bus.js";
+import { buildMessage } from "../services/step-delivery.js";
+import type { Env } from "../index.js";
 
 const friends = new Hono<Env>();
 
@@ -34,8 +35,10 @@ function serializeFriend(row: DbFriend) {
     pictureUrl: row.picture_url,
     statusMessage: row.status_message,
     isFollowing: Boolean(row.is_following),
-    metadata: JSON.parse(row.metadata || '{}'),
-    refCode: (row as unknown as Record<string, unknown>).ref_code as string | null,
+    metadata: JSON.parse(row.metadata || "{}"),
+    refCode: (row as unknown as Record<string, unknown>).ref_code as
+      | string
+      | null,
     userId: row.user_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -50,7 +53,10 @@ function serializeFriend(row: DbFriend) {
  * don't request them.
  */
 function serializeFriendListRow(
-  row: DbFriend & { first_tracked_link_name?: string | null; chat_status?: string | null },
+  row: DbFriend & {
+    first_tracked_link_name?: string | null;
+    chat_status?: string | null;
+  },
   includeChatStatus: boolean,
 ) {
   const base = serializeFriend(row);
@@ -64,7 +70,10 @@ function serializeFriendListRow(
     // chats.status defaulted to 'resolved' for friends without a chats row
     // (matches /api/chats listing). Friend-list and chats-list now agree on
     // 未対応/対応中/対応済み state.
-    chatStatus: (row.chat_status ?? 'resolved') as 'unread' | 'in_progress' | 'resolved',
+    chatStatus: (row.chat_status ?? "resolved") as
+      | "unread"
+      | "in_progress"
+      | "resolved",
   };
 }
 
@@ -79,35 +88,36 @@ function serializeTag(row: DbTag) {
 }
 
 // GET /api/friends - list with pagination
-friends.get('/api/friends', async (c) => {
+friends.get("/api/friends", async (c) => {
   try {
-    const limit = Number(c.req.query('limit') ?? '50');
-    const offset = Number(c.req.query('offset') ?? '0');
-    const tagId = c.req.query('tagId');
-    const lineAccountId = c.req.query('lineAccountId');
-    const search = c.req.query('search');
+    const limit = Number(c.req.query("limit") ?? "50");
+    const offset = Number(c.req.query("offset") ?? "0");
+    const tagId = c.req.query("tagId");
+    const lineAccountId = c.req.query("lineAccountId");
+    const search = c.req.query("search");
     // ?includeTags=false skips per-row tag enrichment (N+1 of getFriendTags
     // → ~50 extra D1 reads on a wide list query). The list view needs tags
     // for filter chips, but autocomplete-style consumers (test-recipient
     // picker, broadcast recipient picker) only render id/displayName/picture
     // and pay the cost for nothing. Default true to keep the historical
     // behavior for existing callers.
-    const includeTags = c.req.query('includeTags') !== 'false';
+    const includeTags = c.req.query("includeTags") !== "false";
     // ?includeChatStatus=true — populate latestIncomingMessage,
     // latestOutgoingAt, activeScenario, and a derived `handled` flag for
     // each friend. Used by the L-step-style /friends listing; off by
     // default to keep the simple list / autocomplete paths cheap.
-    const includeChatStatus = c.req.query('includeChatStatus') === 'true';
+    const includeChatStatus = c.req.query("includeChatStatus") === "true";
     // ?sort=oldest reverses default created_at DESC. Default = recent-first.
     // Search mode (when `search` is set) overrides both — we keep the
     // match-quality ranking and only flip the secondary `created_at` tier.
-    const sort: 'recent' | 'oldest' = c.req.query('sort') === 'oldest' ? 'oldest' : 'recent';
+    const sort: "recent" | "oldest" =
+      c.req.query("sort") === "oldest" ? "oldest" : "recent";
     // ?handled=unhandled filters to friends whose latest activity is an
     // incoming message (mirroring the L-step "未対応" tab). Done in SQL so
     // pagination + total counts are correct; client-side filter would only
     // hide rows on the current page and leave `total` misleading.
-    const handledFilter: 'unhandled' | null =
-      c.req.query('handled') === 'unhandled' ? 'unhandled' : null;
+    const handledFilter: "unhandled" | null =
+      c.req.query("handled") === "unhandled" ? "unhandled" : null;
 
     const db = c.env.DB;
 
@@ -115,15 +125,17 @@ friends.get('/api/friends', async (c) => {
     const conditions: string[] = [];
     const binds: unknown[] = [];
     if (tagId) {
-      conditions.push('EXISTS (SELECT 1 FROM friend_tags ft WHERE ft.friend_id = f.id AND ft.tag_id = ?)');
+      conditions.push(
+        "EXISTS (SELECT 1 FROM friend_tags ft WHERE ft.friend_id = f.id AND ft.tag_id = ?)",
+      );
       binds.push(tagId);
     }
     if (lineAccountId) {
-      conditions.push('f.line_account_id = ?');
+      conditions.push("f.line_account_id = ?");
       binds.push(lineAccountId);
     }
     if (search) {
-      conditions.push('f.display_name LIKE ?');
+      conditions.push("f.display_name LIKE ?");
       binds.push(`%${search}%`);
     }
     // Unhandled filter: chats.status === 'unread'.
@@ -138,7 +150,7 @@ friends.get('/api/friends', async (c) => {
     //   - friends without any chat row default to 'resolved' (lazy-create
     //     in chats.ts:88 also seeds with 'resolved'), matching the chats
     //     listing's COALESCE(c.status, 'resolved') convention
-    if (handledFilter === 'unhandled') {
+    if (handledFilter === "unhandled") {
       // DESC mirrors the /api/chats listing — newest chat row wins so a
       // resolved-then-reopened conversation correctly resurfaces as 未対応.
       conditions.push(
@@ -153,16 +165,21 @@ friends.get('/api/friends', async (c) => {
     // Metadata filters: ?metadata.key=value (e.g. ?metadata.monthly_cost=〜100万円)
     const url = new URL(c.req.url);
     for (const [key, value] of url.searchParams.entries()) {
-      if (key.startsWith('metadata.')) {
-        const metaKey = key.slice('metadata.'.length);
+      if (key.startsWith("metadata.")) {
+        const metaKey = key.slice("metadata.".length);
         conditions.push(`json_extract(f.metadata, '$.' || ?) = ?`);
         binds.push(metaKey, value);
       }
     }
-    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const where =
+      conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
-    const countStmt = db.prepare(`SELECT COUNT(*) as count FROM friends f ${where}`);
-    const totalRow = await (binds.length > 0 ? countStmt.bind(...binds) : countStmt).first<{ count: number }>();
+    const countStmt = db.prepare(
+      `SELECT COUNT(*) as count FROM friends f ${where}`,
+    );
+    const totalRow = await (
+      binds.length > 0 ? countStmt.bind(...binds) : countStmt
+    ).first<{ count: number }>();
     const total = totalRow?.count ?? 0;
 
     // When `search` is present we want exact / prefix matches to surface
@@ -203,7 +220,7 @@ friends.get('/api/friends', async (c) => {
       : `FROM friends f`;
     // Secondary tier of the search-mode ORDER BY (after match_score) and the
     // primary tier in non-search mode. Switched by ?sort=oldest|recent.
-    const createdOrder = sort === 'oldest' ? 'ASC' : 'DESC';
+    const createdOrder = sort === "oldest" ? "ASC" : "DESC";
     let listStmt;
     let listBinds: unknown[];
     if (search) {
@@ -223,7 +240,15 @@ friends.get('/api/friends', async (c) => {
          ORDER BY match_score ASC, f.created_at ${createdOrder}
          LIMIT ? OFFSET ?`,
       );
-      listBinds = [exactPattern, prefixPattern, wordStartAscii, wordStartFullWidth, ...binds, limit, offset];
+      listBinds = [
+        exactPattern,
+        prefixPattern,
+        wordStartAscii,
+        wordStartFullWidth,
+        ...binds,
+        limit,
+        offset,
+      ];
     } else {
       listStmt = db.prepare(
         `SELECT ${baseSelect} ${baseFrom} ${where} ORDER BY f.created_at ${createdOrder} LIMIT ? OFFSET ?`,
@@ -240,10 +265,16 @@ friends.get('/api/friends', async (c) => {
       ? await Promise.all(
           items.map(async (friend) => {
             const tags = await getFriendTags(db, friend.id);
-            return { ...serializeFriendListRow(friend, includeChatStatus), tags: tags.map(serializeTag) };
+            return {
+              ...serializeFriendListRow(friend, includeChatStatus),
+              tags: tags.map(serializeTag),
+            };
           }),
         )
-      : items.map((friend) => ({ ...serializeFriendListRow(friend, includeChatStatus), tags: [] }));
+      : items.map((friend) => ({
+          ...serializeFriendListRow(friend, includeChatStatus),
+          tags: [],
+        }));
 
     // Optional: hydrate chat status (latest in/out message, active scenario,
     // derived "handled" flag). Three batched queries instead of N×3 to keep
@@ -251,11 +282,20 @@ friends.get('/api/friends', async (c) => {
     // row per friend; SQLite supports window functions on D1.
     if (includeChatStatus && items.length > 0) {
       const ids = items.map((f) => f.id);
-      const placeholders = ids.map(() => '?').join(',');
+      const placeholders = ids.map(() => "?").join(",");
 
-      type IncomingRow = { friend_id: string; content: string; message_type: string; created_at: string };
+      type IncomingRow = {
+        friend_id: string;
+        content: string;
+        message_type: string;
+        created_at: string;
+      };
       type OutgoingRow = { friend_id: string; max_at: string };
-      type ScenarioRow = { friend_id: string; scenario_name: string; status: string };
+      type ScenarioRow = {
+        friend_id: string;
+        scenario_name: string;
+        status: string;
+      };
 
       const [incomingRes, outgoingRes, scenarioRes] = await Promise.all([
         db
@@ -299,14 +339,22 @@ friends.get('/api/friends', async (c) => {
           .all<ScenarioRow>(),
       ]);
 
-      const incomingByFriend = new Map(incomingRes.results.map((r) => [r.friend_id, r]));
-      const outgoingByFriend = new Map(outgoingRes.results.map((r) => [r.friend_id, r.max_at]));
-      const scenarioByFriend = new Map(scenarioRes.results.map((r) => [r.friend_id, r]));
+      const incomingByFriend = new Map(
+        incomingRes.results.map((r) => [r.friend_id, r]),
+      );
+      const outgoingByFriend = new Map(
+        outgoingRes.results.map((r) => [r.friend_id, r.max_at]),
+      );
+      const scenarioByFriend = new Map(
+        scenarioRes.results.map((r) => [r.friend_id, r]),
+      );
 
       // We're inside `if (includeChatStatus)` so every row was emitted by
       // serializeFriendListRow with chatStatus populated. TS can't narrow
       // through the union, so assert the populated shape locally.
-      type WithChatStatus = (typeof itemsWithTags)[number] & { chatStatus: 'unread' | 'in_progress' | 'resolved' };
+      type WithChatStatus = (typeof itemsWithTags)[number] & {
+        chatStatus: "unread" | "in_progress" | "resolved";
+      };
       itemsWithTags = (itemsWithTags as WithChatStatus[]).map((f) => {
         const inc = incomingByFriend.get(f.id);
         const outAt = outgoingByFriend.get(f.id);
@@ -315,14 +363,20 @@ friends.get('/api/friends', async (c) => {
         // /chats 画面が見ている persisted state を使う。silent auto-reply や
         // postback のように "incoming だが unread にしない" イベントもあるので、
         // タイムスタンプベースで推測すると /chats と乖離する。
-        const handled = f.chatStatus !== 'unread';
+        const handled = f.chatStatus !== "unread";
         return {
           ...f,
           latestIncomingMessage: inc
-            ? { content: inc.content, messageType: inc.message_type, createdAt: inc.created_at }
+            ? {
+                content: inc.content,
+                messageType: inc.message_type,
+                createdAt: inc.created_at,
+              }
             : null,
           latestOutgoingAt: outAt ?? null,
-          activeScenario: sc ? { name: sc.scenario_name, status: sc.status } : null,
+          activeScenario: sc
+            ? { name: sc.scenario_name, status: sc.status }
+            : null,
           handled,
         };
       });
@@ -339,60 +393,73 @@ friends.get('/api/friends', async (c) => {
       },
     });
   } catch (err) {
-    console.error('GET /api/friends error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    console.error("GET /api/friends error:", err);
+    return c.json({ success: false, error: "Internal server error" }, 500);
   }
 });
 
 // GET /api/friends/count - friend count (must be before /:id)
-friends.get('/api/friends/count', async (c) => {
+friends.get("/api/friends/count", async (c) => {
   try {
-    const lineAccountId = c.req.query('lineAccountId');
+    const lineAccountId = c.req.query("lineAccountId");
     let count: number;
     if (lineAccountId) {
-      const row = await c.env.DB.prepare('SELECT COUNT(*) as count FROM friends WHERE is_following = 1 AND line_account_id = ?')
-        .bind(lineAccountId).first<{ count: number }>();
+      const row = await c.env.DB.prepare(
+        "SELECT COUNT(*) as count FROM friends WHERE is_following = 1 AND line_account_id = ?",
+      )
+        .bind(lineAccountId)
+        .first<{ count: number }>();
       count = row?.count ?? 0;
     } else {
       count = await getFriendCount(c.env.DB);
     }
     return c.json({ success: true, data: { count } });
   } catch (err) {
-    console.error('GET /api/friends/count error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    console.error("GET /api/friends/count error:", err);
+    return c.json({ success: false, error: "Internal server error" }, 500);
   }
 });
 
 // GET /api/friends/ref-stats - ref code attribution stats
-friends.get('/api/friends/ref-stats', async (c) => {
+friends.get("/api/friends/ref-stats", async (c) => {
   try {
-    const lineAccountId = c.req.query('lineAccountId');
-    const where = lineAccountId ? 'WHERE line_account_id = ?' : 'WHERE ref_code IS NOT NULL';
+    const lineAccountId = c.req.query("lineAccountId");
+    const where = lineAccountId
+      ? "WHERE line_account_id = ?"
+      : "WHERE ref_code IS NOT NULL";
     const binds = lineAccountId ? [lineAccountId] : [];
     const stmt = c.env.DB.prepare(
       `SELECT ref_code, COUNT(*) as count FROM friends ${where} AND ref_code IS NOT NULL GROUP BY ref_code ORDER BY count DESC`,
     );
-    const result = await (binds.length > 0 ? stmt.bind(...binds) : stmt).all<{ ref_code: string; count: number }>();
+    const result = await (binds.length > 0 ? stmt.bind(...binds) : stmt).all<{
+      ref_code: string;
+      count: number;
+    }>();
     const total = await c.env.DB.prepare(
-      `SELECT COUNT(*) as count FROM friends ${lineAccountId ? 'WHERE line_account_id = ?' : ''} ${lineAccountId ? 'AND' : 'WHERE'} ref_code IS NOT NULL`,
-    ).bind(...(lineAccountId ? [lineAccountId] : [])).first<{ count: number }>();
+      `SELECT COUNT(*) as count FROM friends ${lineAccountId ? "WHERE line_account_id = ?" : ""} ${lineAccountId ? "AND" : "WHERE"} ref_code IS NOT NULL`,
+    )
+      .bind(...(lineAccountId ? [lineAccountId] : []))
+      .first<{ count: number }>();
     return c.json({
       success: true,
       data: {
-        routes: result.results.map((r) => ({ refCode: r.ref_code, friendCount: r.count })),
+        routes: result.results.map((r) => ({
+          refCode: r.ref_code,
+          friendCount: r.count,
+        })),
         totalWithRef: total?.count ?? 0,
       },
     });
   } catch (err) {
-    console.error('GET /api/friends/ref-stats error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    console.error("GET /api/friends/ref-stats error:", err);
+    return c.json({ success: false, error: "Internal server error" }, 500);
   }
 });
 
 // GET /api/friends/:id - get single friend with tags
-friends.get('/api/friends/:id', async (c) => {
+friends.get("/api/friends/:id", async (c) => {
   try {
-    const id = c.req.param('id');
+    const id = c.req.param("id");
     const db = c.env.DB;
 
     const [friend, tags] = await Promise.all([
@@ -401,7 +468,7 @@ friends.get('/api/friends/:id', async (c) => {
     ]);
 
     if (!friend) {
-      return c.json({ success: false, error: 'Friend not found' }, 404);
+      return c.json({ success: false, error: "Friend not found" }, 404);
     }
 
     return c.json({
@@ -412,30 +479,53 @@ friends.get('/api/friends/:id', async (c) => {
       },
     });
   } catch (err) {
-    console.error('GET /api/friends/:id error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    console.error("GET /api/friends/:id error:", err);
+    return c.json({ success: false, error: "Internal server error" }, 500);
   }
 });
 
 // POST /api/friends/:id/tags - add tag
-friends.post('/api/friends/:id/tags', async (c) => {
+friends.post("/api/friends/:id/tags", async (c) => {
   try {
-    const friendId = c.req.param('id');
+    const friendId = c.req.param("id");
     const body = await c.req.json<{ tagId: string }>();
 
     if (!body.tagId) {
-      return c.json({ success: false, error: 'tagId is required' }, 400);
+      return c.json({ success: false, error: "tagId is required" }, 400);
     }
 
     const db = c.env.DB;
+    // Fetch friend once so the account-scope guard can compare against
+    // friend.line_account_id without re-querying inside the scenario loop.
+    const friend = await getFriendById(db, friendId);
     await addTagToFriend(db, friendId, body.tagId);
 
     // Enroll in tag_added scenarios that match this tag
     const allScenarios = await getScenarios(db);
     for (const scenario of allScenarios) {
-      if (scenario.trigger_type === 'tag_added' && scenario.is_active && scenario.trigger_tag_id === body.tagId) {
+      if (
+        scenario.trigger_type === "tag_added" &&
+        scenario.is_active &&
+        scenario.trigger_tag_id === body.tagId
+      ) {
+        // Account-scope guard: prevent DEV→PROD (or any cross-account) leakage
+        // when an admin attaches a tag whose tag_added scenarios live on a
+        // different account than the friend.
+        if (
+          !scenarioMatchesAccount(
+            scenario.line_account_id,
+            friend?.line_account_id,
+          )
+        ) {
+          console.warn(
+            `[account-scope] BLOCKED POST /api/friends/${friendId}/tags → scenario=${scenario.id} (scenario.account=${scenario.line_account_id}, friend.account=${friend?.line_account_id})`,
+          );
+          continue;
+        }
         const existing = await db
-          .prepare(`SELECT id FROM friend_scenarios WHERE friend_id = ? AND scenario_id = ?`)
+          .prepare(
+            `SELECT id FROM friend_scenarios WHERE friend_id = ? AND scenario_id = ?`,
+          )
           .bind(friendId, scenario.id)
           .first();
         if (!existing) {
@@ -445,51 +535,57 @@ friends.post('/api/friends/:id/tags', async (c) => {
     }
 
     // イベントバス発火: tag_change
-    await fireEvent(db, 'tag_change', { friendId, eventData: { tagId: body.tagId, action: 'add' } });
+    await fireEvent(db, "tag_change", {
+      friendId,
+      eventData: { tagId: body.tagId, action: "add" },
+    });
 
     return c.json({ success: true, data: null }, 201);
   } catch (err) {
-    console.error('POST /api/friends/:id/tags error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    console.error("POST /api/friends/:id/tags error:", err);
+    return c.json({ success: false, error: "Internal server error" }, 500);
   }
 });
 
 // DELETE /api/friends/:id/tags/:tagId - remove tag
-friends.delete('/api/friends/:id/tags/:tagId', async (c) => {
+friends.delete("/api/friends/:id/tags/:tagId", async (c) => {
   try {
-    const friendId = c.req.param('id');
-    const tagId = c.req.param('tagId');
+    const friendId = c.req.param("id");
+    const tagId = c.req.param("tagId");
 
     await removeTagFromFriend(c.env.DB, friendId, tagId);
 
     // イベントバス発火: tag_change
-    await fireEvent(c.env.DB, 'tag_change', { friendId, eventData: { tagId, action: 'remove' } });
+    await fireEvent(c.env.DB, "tag_change", {
+      friendId,
+      eventData: { tagId, action: "remove" },
+    });
 
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('DELETE /api/friends/:id/tags/:tagId error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    console.error("DELETE /api/friends/:id/tags/:tagId error:", err);
+    return c.json({ success: false, error: "Internal server error" }, 500);
   }
 });
 
 // PUT /api/friends/:id/metadata - merge metadata fields
-friends.put('/api/friends/:id/metadata', async (c) => {
+friends.put("/api/friends/:id/metadata", async (c) => {
   try {
-    const friendId = c.req.param('id');
+    const friendId = c.req.param("id");
     const db = c.env.DB;
 
     const friend = await getFriendById(db, friendId);
     if (!friend) {
-      return c.json({ success: false, error: 'Friend not found' }, 404);
+      return c.json({ success: false, error: "Friend not found" }, 404);
     }
 
     const body = await c.req.json<Record<string, unknown>>();
-    const existing = JSON.parse(friend.metadata || '{}');
+    const existing = JSON.parse(friend.metadata || "{}");
     const merged = { ...existing, ...body };
     const now = jstNow();
 
     await db
-      .prepare('UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?')
+      .prepare("UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?")
       .bind(JSON.stringify(merged), now, friendId)
       .run();
 
@@ -504,40 +600,45 @@ friends.put('/api/friends/:id/metadata', async (c) => {
       },
     });
   } catch (err) {
-    console.error('PUT /api/friends/:id/metadata error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    console.error("PUT /api/friends/:id/metadata error:", err);
+    return c.json({ success: false, error: "Internal server error" }, 500);
   }
 });
 
 // GET /api/friends/:id/messages - get message history
-friends.get('/api/friends/:id/messages', async (c) => {
+friends.get("/api/friends/:id/messages", async (c) => {
   try {
-    const friendId = c.req.param('id');
+    const friendId = c.req.param("id");
     // Fetch the latest 200 messages (DESC) then reverse to ASC for display.
     // Using ORDER BY ASC LIMIT 200 returns the OLDEST 200 rows, which silently
     // hides recent activity for chatty friends. Exclude delivery_type='test'
     // to stay consistent with /api/chats/:id, so the same friend shows the
     // same history across DirectMessagePanel and the chat panel.
-    const result = await c.env.DB
-      .prepare(
-        `SELECT id, direction, message_type as messageType, content, created_at as createdAt
+    const result = await c.env.DB.prepare(
+      `SELECT id, direction, message_type as messageType, content, created_at as createdAt
          FROM messages_log WHERE friend_id = ?
            AND (delivery_type IS NULL OR delivery_type != 'test')
          ORDER BY created_at DESC LIMIT 200`,
-      )
+    )
       .bind(friendId)
-      .all<{ id: string; direction: string; messageType: string; content: string; createdAt: string }>();
+      .all<{
+        id: string;
+        direction: string;
+        messageType: string;
+        content: string;
+        createdAt: string;
+      }>();
     return c.json({ success: true, data: result.results.reverse() });
   } catch (err) {
-    console.error('GET /api/friends/:id/messages error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    console.error("GET /api/friends/:id/messages error:", err);
+    return c.json({ success: false, error: "Internal server error" }, 500);
   }
 });
 
 // POST /api/friends/:id/messages - send message to friend
-friends.post('/api/friends/:id/messages', async (c) => {
+friends.post("/api/friends/:id/messages", async (c) => {
   try {
-    const friendId = c.req.param('id');
+    const friendId = c.req.param("id");
     const body = await c.req.json<{
       messageType?: string;
       content: string;
@@ -545,34 +646,44 @@ friends.post('/api/friends/:id/messages', async (c) => {
     }>();
 
     if (!body.content) {
-      return c.json({ success: false, error: 'content is required' }, 400);
+      return c.json({ success: false, error: "content is required" }, 400);
     }
 
     const db = c.env.DB;
     const friend = await getFriendById(db, friendId);
     if (!friend) {
-      return c.json({ success: false, error: 'Friend not found' }, 404);
+      return c.json({ success: false, error: "Friend not found" }, 404);
     }
 
-    const { LineClient } = await import('@line-crm/line-sdk');
+    const { LineClient } = await import("@line-crm/line-sdk");
     // Resolve access token from friend's account (multi-account support)
     let accessToken = c.env.LINE_CHANNEL_ACCESS_TOKEN;
     if ((friend as unknown as Record<string, unknown>).line_account_id) {
-      const { getLineAccountById } = await import('@line-crm/db');
-      const account = await getLineAccountById(db, (friend as unknown as Record<string, unknown>).line_account_id as string);
+      const { getLineAccountById } = await import("@line-crm/db");
+      const account = await getLineAccountById(
+        db,
+        (friend as unknown as Record<string, unknown>)
+          .line_account_id as string,
+      );
       if (account) accessToken = account.channel_access_token;
     }
     const lineClient = new LineClient(accessToken);
-    const messageType = body.messageType ?? 'text';
+    const messageType = body.messageType ?? "text";
 
     // Auto-wrap URLs with tracking links (text with URLs → Flex with button)
-    const { autoTrackContent } = await import('../services/auto-track.js');
+    const { autoTrackContent } = await import("../services/auto-track.js");
     const tracked = await autoTrackContent(
-      db, messageType, body.content,
+      db,
+      messageType,
+      body.content,
       c.env.WORKER_URL || new URL(c.req.url).origin,
     );
 
-    const message = buildMessage(tracked.messageType, tracked.content, body.altText);
+    const message = buildMessage(
+      tracked.messageType,
+      tracked.content,
+      body.altText,
+    );
     await lineClient.pushMessage(friend.line_user_id, [message]);
 
     // Log outgoing message
@@ -588,7 +699,7 @@ friends.post('/api/friends/:id/messages', async (c) => {
     return c.json({ success: true, data: { messageId: logId } });
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    console.error('POST /api/friends/:id/messages error:', errMsg);
+    console.error("POST /api/friends/:id/messages error:", errMsg);
     return c.json({ success: false, error: errMsg }, 500);
   }
 });

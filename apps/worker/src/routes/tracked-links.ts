@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono } from "hono";
 import {
   getTrackedLinks,
   getTrackedLinkById,
@@ -8,10 +8,15 @@ import {
   recordLinkClick,
   getLinkClicks,
   getFriendByLineUserId,
-} from '@line-crm/db';
-import { addTagToFriend, enrollFriendInScenario } from '@line-crm/db';
-import type { TrackedLink } from '@line-crm/db';
-import type { Env } from '../index.js';
+} from "@line-crm/db";
+import {
+  addTagToFriend,
+  enrollFriendInScenario,
+  getFriendById,
+  scenarioMatchesAccount,
+} from "@line-crm/db";
+import type { TrackedLink } from "@line-crm/db";
+import type { Env } from "../index.js";
 
 const trackedLinks = new Hono<Env>();
 
@@ -39,24 +44,27 @@ function getBaseUrl(c: { req: { url: string } }): string {
 }
 
 // GET /api/tracked-links — list all
-trackedLinks.get('/api/tracked-links', async (c) => {
+trackedLinks.get("/api/tracked-links", async (c) => {
   try {
     const items = await getTrackedLinks(c.env.DB);
     const base = getBaseUrl(c);
-    return c.json({ success: true, data: items.map((item) => serializeTrackedLink(item, base)) });
+    return c.json({
+      success: true,
+      data: items.map((item) => serializeTrackedLink(item, base)),
+    });
   } catch (err) {
-    console.error('GET /api/tracked-links error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    console.error("GET /api/tracked-links error:", err);
+    return c.json({ success: false, error: "Internal server error" }, 500);
   }
 });
 
 // GET /api/tracked-links/:id — get single with click details
-trackedLinks.get('/api/tracked-links/:id', async (c) => {
+trackedLinks.get("/api/tracked-links/:id", async (c) => {
   try {
-    const id = c.req.param('id');
+    const id = c.req.param("id");
     const link = await getTrackedLinkById(c.env.DB, id);
     if (!link) {
-      return c.json({ success: false, error: 'Tracked link not found' }, 404);
+      return c.json({ success: false, error: "Tracked link not found" }, 404);
     }
     const clicks = await getLinkClicks(c.env.DB, id);
     const base = getBaseUrl(c);
@@ -73,13 +81,13 @@ trackedLinks.get('/api/tracked-links/:id', async (c) => {
       },
     });
   } catch (err) {
-    console.error('GET /api/tracked-links/:id error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    console.error("GET /api/tracked-links/:id error:", err);
+    return c.json({ success: false, error: "Internal server error" }, 500);
   }
 });
 
 // POST /api/tracked-links — create
-trackedLinks.post('/api/tracked-links', async (c) => {
+trackedLinks.post("/api/tracked-links", async (c) => {
   try {
     const body = await c.req.json<{
       name: string;
@@ -91,7 +99,10 @@ trackedLinks.post('/api/tracked-links', async (c) => {
     }>();
 
     if (!body.name || !body.originalUrl) {
-      return c.json({ success: false, error: 'name and originalUrl are required' }, 400);
+      return c.json(
+        { success: false, error: "name and originalUrl are required" },
+        400,
+      );
     }
 
     const link = await createTrackedLink(c.env.DB, {
@@ -104,17 +115,20 @@ trackedLinks.post('/api/tracked-links', async (c) => {
     });
 
     const base = getBaseUrl(c);
-    return c.json({ success: true, data: serializeTrackedLink(link, base) }, 201);
+    return c.json(
+      { success: true, data: serializeTrackedLink(link, base) },
+      201,
+    );
   } catch (err) {
-    console.error('POST /api/tracked-links error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    console.error("POST /api/tracked-links error:", err);
+    return c.json({ success: false, error: "Internal server error" }, 500);
   }
 });
 
 // PATCH /api/tracked-links/:id — update mutable fields
-trackedLinks.patch('/api/tracked-links/:id', async (c) => {
+trackedLinks.patch("/api/tracked-links/:id", async (c) => {
   try {
-    const id = c.req.param('id');
+    const id = c.req.param("id");
     const body = await c.req.json<{
       name?: string;
       tagId?: string | null;
@@ -126,47 +140,47 @@ trackedLinks.patch('/api/tracked-links/:id', async (c) => {
 
     const link = await updateTrackedLink(c.env.DB, id, body);
     if (!link) {
-      return c.json({ success: false, error: 'Tracked link not found' }, 404);
+      return c.json({ success: false, error: "Tracked link not found" }, 404);
     }
     const base = getBaseUrl(c);
     return c.json({ success: true, data: serializeTrackedLink(link, base) });
   } catch (err) {
-    console.error('PATCH /api/tracked-links/:id error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    console.error("PATCH /api/tracked-links/:id error:", err);
+    return c.json({ success: false, error: "Internal server error" }, 500);
   }
 });
 
 // DELETE /api/tracked-links/:id
-trackedLinks.delete('/api/tracked-links/:id', async (c) => {
+trackedLinks.delete("/api/tracked-links/:id", async (c) => {
   try {
-    const id = c.req.param('id');
+    const id = c.req.param("id");
     const link = await getTrackedLinkById(c.env.DB, id);
     if (!link) {
-      return c.json({ success: false, error: 'Tracked link not found' }, 404);
+      return c.json({ success: false, error: "Tracked link not found" }, 404);
     }
     await deleteTrackedLink(c.env.DB, id);
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('DELETE /api/tracked-links/:id error:', err);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
+    console.error("DELETE /api/tracked-links/:id error:", err);
+    return c.json({ success: false, error: "Internal server error" }, 500);
   }
 });
 
 // Domains where Universal Links should be used (JS redirect instead of 302)
 const APP_LINK_DOMAINS = new Set([
-  'x.com',
-  'twitter.com',
-  'instagram.com',
-  'youtube.com',
-  'youtu.be',
-  'tiktok.com',
-  'facebook.com',
-  'github.com',
+  "x.com",
+  "twitter.com",
+  "instagram.com",
+  "youtube.com",
+  "youtu.be",
+  "tiktok.com",
+  "facebook.com",
+  "github.com",
 ]);
 
 function isAppLinkDomain(url: string): boolean {
   try {
-    const hostname = new URL(url).hostname.replace(/^www\./, '');
+    const hostname = new URL(url).hostname.replace(/^www\./, "");
     return APP_LINK_DOMAINS.has(hostname);
   } catch {
     return false;
@@ -175,19 +189,19 @@ function isAppLinkDomain(url: string): boolean {
 
 // Android app package names for intent:// deep links
 const ANDROID_PACKAGES: Record<string, string> = {
-  'x.com': 'com.twitter.android',
-  'twitter.com': 'com.twitter.android',
-  'instagram.com': 'com.instagram.android',
-  'youtube.com': 'com.google.android.youtube',
-  'youtu.be': 'com.google.android.youtube',
-  'tiktok.com': 'com.zhiliaoapp.musically',
-  'facebook.com': 'com.facebook.katana',
-  'github.com': 'com.github.android',
+  "x.com": "com.twitter.android",
+  "twitter.com": "com.twitter.android",
+  "instagram.com": "com.instagram.android",
+  "youtube.com": "com.google.android.youtube",
+  "youtu.be": "com.google.android.youtube",
+  "tiktok.com": "com.zhiliaoapp.musically",
+  "facebook.com": "com.facebook.katana",
+  "github.com": "com.github.android",
 };
 
 function getAndroidPackage(url: string): string | null {
   try {
-    const hostname = new URL(url).hostname.replace(/^www\./, '');
+    const hostname = new URL(url).hostname.replace(/^www\./, "");
     return ANDROID_PACKAGES[hostname] ?? null;
   } catch {
     return null;
@@ -195,13 +209,15 @@ function getAndroidPackage(url: string): string | null {
 }
 
 function buildAppRedirectHtml(destinationUrl: string): string {
-  const escaped = destinationUrl.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+  const escaped = destinationUrl.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
   const androidPackage = getAndroidPackage(destinationUrl);
   // intent://path#Intent;scheme=https;package=com.xxx;S.browser_fallback_url=https://...;end
   const intentUrl = androidPackage
-    ? `intent://${destinationUrl.replace(/^https?:\/\//, '')}#Intent;scheme=https;package=${androidPackage};S.browser_fallback_url=${encodeURIComponent(destinationUrl)};end`
+    ? `intent://${destinationUrl.replace(/^https?:\/\//, "")}#Intent;scheme=https;package=${androidPackage};S.browser_fallback_url=${encodeURIComponent(destinationUrl)};end`
     : null;
-  const intentEscaped = intentUrl ? intentUrl.replace(/&/g, '&amp;').replace(/"/g, '&quot;') : '';
+  const intentEscaped = intentUrl
+    ? intentUrl.replace(/&/g, "&amp;").replace(/"/g, "&quot;")
+    : "";
 
   return `<!DOCTYPE html>
 <html><head>
@@ -226,25 +242,31 @@ function buildAppRedirectHtml(destinationUrl: string): string {
 }
 
 // GET /t/:linkId — click tracking redirect (no auth, fast redirect)
-trackedLinks.get('/t/:linkId', async (c) => {
-  const linkId = c.req.param('linkId');
-  const lineUserId = c.req.query('lu') ?? null;
-  let friendId = c.req.query('f') ?? null;
+trackedLinks.get("/t/:linkId", async (c) => {
+  const linkId = c.req.param("linkId");
+  const lineUserId = c.req.query("lu") ?? null;
+  let friendId = c.req.query("f") ?? null;
 
   // Look up the link first
   const link = await getTrackedLinkById(c.env.DB, linkId);
 
   if (!link || !link.is_active) {
-    return c.json({ success: false, error: 'Link not found' }, 404);
+    return c.json({ success: false, error: "Link not found" }, 404);
   }
 
   const useAppRedirect = isAppLinkDomain(link.original_url);
 
   // If no user ID yet, check if this is LINE's in-app browser → redirect to LIFF for identification
   // Skip LIFF redirect for app-link domains (they'll come from Safari via externalBrowser)
-  const ua = c.req.header('user-agent') || '';
+  const ua = c.req.header("user-agent") || "";
   const isLineApp = /\bLine\b/i.test(ua);
-  if (!useAppRedirect && !lineUserId && !friendId && isLineApp && c.env.LIFF_URL) {
+  if (
+    !useAppRedirect &&
+    !lineUserId &&
+    !friendId &&
+    isLineApp &&
+    c.env.LIFF_URL
+  ) {
     const directUrl = `${c.env.WORKER_URL || new URL(c.req.url).origin}/t/${linkId}`;
     const liffRedirect = `${c.env.LIFF_URL}?redirect=${encodeURIComponent(directUrl)}`;
     return c.redirect(liffRedirect, 302);
@@ -275,7 +297,40 @@ trackedLinks.get('/t/:linkId', async (c) => {
           }
 
           if (link.scenario_id) {
-            actions.push(enrollFriendInScenario(c.env.DB, friendId, link.scenario_id));
+            // Account-scope guard: a tracked link's scenario_id can point to a
+            // scenario owned by a different LINE account than the friend that
+            // just clicked it (e.g. cross-channel link sharing, DEV-OA QR
+            // codes leaked into PROD friend journeys). Verify the pair before
+            // enrolling, otherwise the friend gets cross-bot scenario sends.
+            const linkScenarioId = link.scenario_id;
+            actions.push(
+              (async () => {
+                const [friend, scenarioRow] = await Promise.all([
+                  getFriendById(c.env.DB, friendId),
+                  c.env.DB.prepare(
+                    `SELECT line_account_id FROM scenarios WHERE id = ?`,
+                  )
+                    .bind(linkScenarioId)
+                    .first<{ line_account_id: string | null }>(),
+                ]);
+                if (
+                  !scenarioMatchesAccount(
+                    scenarioRow?.line_account_id,
+                    friend?.line_account_id,
+                  )
+                ) {
+                  console.warn(
+                    `[account-scope] BLOCKED tracked-link ${linkId} → scenario=${linkScenarioId} (scenario.account=${scenarioRow?.line_account_id}, friend=${friendId}.account=${friend?.line_account_id})`,
+                  );
+                  return null;
+                }
+                return enrollFriendInScenario(
+                  c.env.DB,
+                  friendId,
+                  linkScenarioId,
+                );
+              })(),
+            );
           }
 
           if (actions.length > 0) {
