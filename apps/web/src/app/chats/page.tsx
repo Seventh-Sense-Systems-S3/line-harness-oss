@@ -6,6 +6,7 @@ import { useAccount } from '@/contexts/account-context'
 import Header from '@/components/layout/header'
 import CcPromptButton from '@/components/cc-prompt-button'
 import FlexPreviewComponent from '@/components/flex-preview'
+import FriendInfoSidebar from '@/components/chats/friend-info-sidebar'
 
 interface Chat {
   id: string
@@ -16,6 +17,9 @@ interface Chat {
   status: 'unread' | 'in_progress' | 'resolved'
   notes: string | null
   lastMessageAt: string | null
+  lastMessageContent: string | null
+  lastMessageDirection: 'incoming' | 'outgoing' | null
+  lastMessageType: string | null
   createdAt: string
   updatedAt: string
 }
@@ -64,6 +68,21 @@ function formatDatetime(iso: string | null): string {
   })
 }
 
+function sameYmd(aIso: string, bIso: string): boolean {
+  const a = new Date(aIso)
+  const b = new Date(bIso)
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  )
+}
+
+function formatYmdSlash(iso: string): string {
+  const d = new Date(iso)
+  return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`
+}
+
 const ccPrompts = [
   {
     title: 'チャット対応テンプレート',
@@ -108,6 +127,8 @@ function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
   const [sending, setSending] = useState(false)
   const [messages, setMessages] = useState<MessageLog[]>([])
   const [loadingMessages, setLoadingMessages] = useState(true)
+  const isComposingRef = useRef(false)
+  const sendLockRef = useRef(false)
 
   useEffect(() => {
     const loadMessages = async () => {
@@ -124,7 +145,8 @@ function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
   }, [friendId])
 
   const handleSend = async () => {
-    if (!message.trim() || sending) return
+    if (!message.trim() || sending || sendLockRef.current) return
+    sendLockRef.current = true
     setSending(true)
     try {
       await fetchApi(`/api/friends/${friendId}/messages`, {
@@ -141,6 +163,7 @@ function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
       setMessage('')
     } catch { /* silent */ }
     setSending(false)
+    sendLockRef.current = false
   }
 
   function renderContent(msg: MessageLog) {
@@ -218,7 +241,16 @@ function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
             type="text"
             value={message}
             onChange={(e) => setMessage(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
+            onCompositionStart={() => { isComposingRef.current = true }}
+            onCompositionEnd={() => { isComposingRef.current = false }}
+            onKeyDown={(e) => {
+              // IME変換確定のEnterでは送信しない
+              if (e.nativeEvent.isComposing || isComposingRef.current || e.keyCode === 229) return
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                handleSend()
+              }
+            }}
             placeholder="メッセージを入力..."
             className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
           />
@@ -244,17 +276,23 @@ export default function ChatsPage() {
   const [selectedFriendId, setSelectedFriendId] = useState<string | null>(null)
   const [chatDetail, setChatDetail] = useState<ChatDetail | null>(null)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
+  const statusFilterRef = useRef<StatusFilter>('all')
+  // Send mode: 'enter' = Enter sends, Shift+Enter = newline; 'shift-enter' = reverse
+  const [sendMode, setSendMode] = useState<'enter' | 'shift-enter'>('enter')
   const [loading, setLoading] = useState(true)
   const [detailLoading, setDetailLoading] = useState(false)
   const [error, setError] = useState('')
   const [messageContent, setMessageContent] = useState('')
   const [sending, setSending] = useState(false)
+  const sendLockRef = useRef(false)
   const [notes, setNotes] = useState('')
   const [savingNotes, setSavingNotes] = useState(false)
   const [showLoadingIndicator, setShowLoadingIndicator] = useState(false)
   const [loadingSeconds, setLoadingSeconds] = useState(5)
   const lastLoadingTriggerAtRef = useRef<Record<string, number>>({})
   const [isMessageInputFocused, setIsMessageInputFocused] = useState(false)
+  const isComposingRef = useRef(false)
+  const messagesScrollRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     try {
@@ -286,15 +324,9 @@ export default function ChatsPage() {
       const params: { status?: string; accountId?: string } = {}
       if (statusFilter !== 'all') params.status = statusFilter
       if (selectedAccountId) params.accountId = selectedAccountId
-      const [chatRes, friendRes] = await Promise.allSettled([
-        api.chats.list(params),
-        api.friends.list({ accountId: selectedAccountId || undefined, limit: '800' }),
-      ])
-      if (chatRes.status === 'fulfilled' && chatRes.value.success) {
-        setChats(chatRes.value.data as unknown as Chat[])
-      }
-      if (friendRes.status === 'fulfilled' && friendRes.value.success) {
-        setAllFriends((friendRes.value.data as unknown as { items: FriendItem[] }).items)
+      const chatRes = await api.chats.list(params)
+      if (chatRes.success) {
+        setChats(chatRes.data as unknown as Chat[])
       }
     } catch {
       setError('チャットの読み込みに失敗しました。もう一度お試しください。')
@@ -303,16 +335,50 @@ export default function ChatsPage() {
     }
   }, [statusFilter, selectedAccountId])
 
+  // Friends list (for the "new direct message" modal) — loaded lazily in the background
+  // Previously fetched 800 friends in parallel with chats, which blocked the initial render.
+  const loadAllFriends = useCallback(async () => {
+    try {
+      const friendRes = await api.friends.list({ accountId: selectedAccountId || undefined, limit: '800' })
+      if (friendRes.success) {
+        setAllFriends((friendRes.data as unknown as { items: FriendItem[] }).items)
+      }
+    } catch { /* silent */ }
+  }, [selectedAccountId])
+
+  useEffect(() => { void loadAllFriends() }, [loadAllFriends])
+
+  // Keep ref in sync so setChats updater can read the latest filter without stale closure
+  useEffect(() => { statusFilterRef.current = statusFilter }, [statusFilter])
+
+  // Load/save sendMode preference (guarded — privacy-restricted browsers throw)
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('chat.sendMode')
+      if (saved === 'enter' || saved === 'shift-enter') setSendMode(saved)
+    } catch { /* localStorage unavailable */ }
+  }, [])
+  useEffect(() => {
+    try { localStorage.setItem('chat.sendMode', sendMode) } catch { /* ignore */ }
+  }, [sendMode])
+
   const loadChatDetail = useCallback(async (chatId: string) => {
     setDetailLoading(true)
+    setError('')
     try {
       const res = await api.chats.get(chatId)
       if (res.success) {
         setChatDetail(res.data as unknown as ChatDetail)
         setNotes((res.data as unknown as ChatDetail).notes || '')
+      } else {
+        // API は 200 で success:false を返す可能性 (例: 404 lookup)。詳細を画面に出す。
+        const errMsg = (res as { error?: string }).error ?? '不明なエラー'
+        setError(`チャット詳細の読み込みに失敗しました: ${errMsg}`)
       }
-    } catch {
-      setError('チャット詳細の読み込みに失敗しました。')
+    } catch (err) {
+      // ネットワーク / parse / auth fail などの例外。empty catch だと原因不明だったので詳細を出す。
+      const msg = err instanceof Error ? err.message : String(err)
+      setError(`チャット詳細の読み込みに失敗しました: ${msg}`)
     } finally {
       setDetailLoading(false)
     }
@@ -322,6 +388,17 @@ export default function ChatsPage() {
     loadChats()
   }, [loadChats])
 
+  // Deep-link from other pages (e.g. /form-submissions): ?friend=<friendId>
+  // chat list returns id = friend_id, so selectedChatId === friendId is correct.
+  // If no chat exists yet, loadChatDetail will fail and the user can fall back to
+  // the friend list — acceptable for now.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const params = new URLSearchParams(window.location.search)
+    const friendId = params.get('friend')
+    if (friendId) setSelectedChatId(friendId)
+  }, [])
+
   useEffect(() => {
     if (selectedChatId) {
       loadChatDetail(selectedChatId)
@@ -329,6 +406,69 @@ export default function ChatsPage() {
       setChatDetail(null)
     }
   }, [selectedChatId, loadChatDetail])
+
+  // Surface deep-linked chats in the sidebar even when the current account
+  // filter or status filter would exclude them — otherwise the user replies
+  // and the conversation stays invisible until they refresh.
+  // Re-runs when `chats` changes (e.g. after loadChats refetches on filter
+  // change) so the synthetic entry is re-injected if the next API result
+  // does not include it. Returning `prev` unchanged when already present
+  // avoids any update loop.
+  useEffect(() => {
+    if (!chatDetail) return
+    setChats((prev) => {
+      if (prev.some((c) => c.id === chatDetail.id)) return prev
+      // /api/chats/:id may not populate the lastMessage* fields; derive
+      // from the messages array as a fallback so the sidebar preview is
+      // not stuck on "(まだメッセージなし)".
+      const lastMsg = chatDetail.messages?.[chatDetail.messages.length - 1]
+      const entry: Chat = {
+        id: chatDetail.id,
+        friendId: chatDetail.friendId,
+        friendName: chatDetail.friendName,
+        friendPictureUrl: chatDetail.friendPictureUrl,
+        operatorId: chatDetail.operatorId ?? null,
+        status: chatDetail.status,
+        notes: chatDetail.notes ?? null,
+        lastMessageAt: chatDetail.lastMessageAt ?? lastMsg?.createdAt ?? null,
+        lastMessageContent: chatDetail.lastMessageContent ?? lastMsg?.content ?? null,
+        lastMessageDirection: chatDetail.lastMessageDirection ?? lastMsg?.direction ?? null,
+        lastMessageType: chatDetail.lastMessageType ?? lastMsg?.messageType ?? null,
+        createdAt: chatDetail.createdAt,
+        updatedAt: chatDetail.updatedAt,
+      }
+      return [entry, ...prev]
+    })
+  }, [chatDetail, chats])
+
+  // 詳細が新しくロードされたら最下部（＝最新メッセージ）までスクロールする。
+  // そこから上にスクロールすれば過去のメッセージを辿れる（LINE受信画面と同じUX）。
+  // ユーザーが手動でスクロールしたら delayed auto-scroll は発動させない。
+  useEffect(() => {
+    if (!chatDetail?.messages || chatDetail.messages.length === 0) return
+    const el = messagesScrollRef.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+    let userScrolled = false
+    const onScroll = () => {
+      if (!messagesScrollRef.current) return
+      const current = messagesScrollRef.current
+      // 下端から一定以上離れたらユーザー操作とみなす
+      if (current.scrollHeight - current.scrollTop - current.clientHeight > 20) {
+        userScrolled = true
+      }
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    // 画像/Flex の表示後に高さが増える場合に追従するフォロワー（ユーザーがスクロール済みなら発動させない）
+    const id = window.setTimeout(() => {
+      if (userScrolled || !messagesScrollRef.current) return
+      messagesScrollRef.current.scrollTop = messagesScrollRef.current.scrollHeight
+    }, 150)
+    return () => {
+      window.clearTimeout(id)
+      el.removeEventListener('scroll', onScroll)
+    }
+  }, [chatDetail?.id, chatDetail?.messages?.length])
 
   const handleSelectChat = (chatId: string) => {
     setSelectedChatId(chatId)
@@ -355,19 +495,61 @@ export default function ChatsPage() {
   }, [showLoadingIndicator, loadingSeconds])
 
   const handleSendMessage = async () => {
-    if (!selectedChatId || !messageContent.trim()) return
+    if (!selectedChatId || !messageContent.trim() || sending || sendLockRef.current) return
+    const content = messageContent.trim()
+    const sendingChatId = selectedChatId  // capture the chat id for this send
+    sendLockRef.current = true
     setSending(true)
     try {
-      await api.chats.send(selectedChatId, {
-        content: messageContent.trim(),
-      })
+      await api.chats.send(sendingChatId, { content })
       setMessageContent('')
-      loadChatDetail(selectedChatId)
-      loadChats()
+      // Optimistic update: append message locally instead of refetching (prevents scroll jump / full reload feel)
+      const now = new Date().toISOString()
+      // Only mutate chatDetail if it still corresponds to the chat we just sent to
+      setChatDetail((prev) => (prev && prev.id === sendingChatId) ? {
+        ...prev,
+        lastMessageAt: now,
+        status: 'in_progress',
+        messages: [
+          ...(prev.messages ?? []),
+          {
+            id: crypto.randomUUID(),
+            direction: 'outgoing',
+            messageType: 'text',
+            content,
+            createdAt: now,
+          },
+        ],
+      } : prev)
+      setChats((prev) => {
+        // Skip reconciliation if the list no longer contains this chat (e.g. tab changed mid-send)
+        const exists = prev.some((c) => c.id === sendingChatId)
+        if (!exists) return prev
+        const currentFilter = statusFilterRef.current
+        const updated = prev.map((c) => c.id === sendingChatId ? {
+          ...c,
+          lastMessageAt: now,
+          status: 'in_progress' as const,
+          // 一覧の preview も即時更新する。incoming 優先ロジックで上書きされ得るが、
+          // 楽観 UI では「operator が今送った文面」が一瞬見えるのが期待動作。
+          // 次回 loadChats() で server 側の真の最新 (incoming 優先) に reconcile される。
+          lastMessageContent: content,
+          lastMessageDirection: 'outgoing' as const,
+          lastMessageType: 'text' as const,
+        } : c)
+        // Drop rows that no longer match the current tab (e.g. replying from 未読 moves chat to in_progress)
+        const filtered = currentFilter === 'all' ? updated : updated.filter((c) => c.status === currentFilter)
+        return [...filtered].sort((a, b) => {
+          const at = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0
+          const bt = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0
+          return bt - at
+        })
+      })
     } catch {
       setError('メッセージの送信に失敗しました。')
     } finally {
       setSending(false)
+      sendLockRef.current = false
     }
   }
 
@@ -395,8 +577,14 @@ export default function ChatsPage() {
     }
   }
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    // IME変換確定のEnterでは送信しない
+    if (e.nativeEvent.isComposing || isComposingRef.current || e.keyCode === 229) return
+    if (e.key !== 'Enter') return
+    // sendMode 'enter': Enter単体で送信、Shift+Enterは改行
+    // sendMode 'shift-enter': Shift+Enterで送信、Enter単体は改行
+    const shouldSend = sendMode === 'enter' ? !e.shiftKey : e.shiftKey
+    if (shouldSend) {
       e.preventDefault()
       handleSendMessage()
     }
@@ -416,23 +604,7 @@ export default function ChatsPage() {
       <div className="flex gap-4 h-[calc(100vh-120px)] lg:h-[calc(100vh-180px)]">
         {/* Left Panel: Chat List */}
         <div className={`w-full lg:w-96 lg:flex-shrink-0 bg-white rounded-lg shadow-sm border border-gray-200 flex-col overflow-hidden ${selectedChatId ? 'hidden lg:flex' : 'flex'}`}>
-          {/* Status Filter Tabs */}
-          <div className="flex border-b border-gray-200">
-            {statusFilters.map((filter) => (
-              <button
-                key={filter.key}
-                onClick={() => { setStatusFilter(filter.key); setSelectedChatId(null) }}
-                className={`flex-1 px-3 py-2.5 min-h-[44px] text-xs font-medium transition-colors ${
-                  statusFilter === filter.key
-                    ? 'text-white'
-                    : 'text-gray-600 hover:bg-gray-50'
-                }`}
-                style={statusFilter === filter.key ? { backgroundColor: '#06C755' } : undefined}
-              >
-                {filter.label}
-              </button>
-            ))}
-          </div>
+          {/* タブ (全て / 未読 / 対応中 / 解決済) は意図的に削除。直近メッセージが見やすい LINE 風一覧を優先。 */}
 
           {/* Chat List */}
           <div className="flex-1 overflow-y-auto">
@@ -453,8 +625,25 @@ export default function ChatsPage() {
             ) : (
               <>
                 {chats.map((chat) => {
-                  const statusInfo = statusConfig[chat.status]
                   const isSelected = selectedChatId === chat.id
+                  // 「真の自発（要対応）」= chat.status='unread'。webhook 側で auto_reply に
+                  // マッチしなかった incoming のみ unread に設定される。auto_reply trigger
+                  // (キーワード "コスト比較" 等) は matched 扱いで unread 化しない。
+                  // bold / 🟥 の表示はこの status を使う。direction だけだと button 押下も
+                  // 強調してしまって S/N 比が悪化する。
+                  const needsAttention = chat.status === 'unread'
+                  // 最新メッセージの本文 preview。flex/image は文字列で見せても意味が薄いので type 表記に置換。
+                  const previewRaw = chat.lastMessageContent ?? ''
+                  const preview = (() => {
+                    if (chat.lastMessageType === 'image') return '📷 画像'
+                    if (chat.lastMessageType === 'flex') return '📋 Flexメッセージ'
+                    if (chat.lastMessageType === 'sticker') return '🎨 スタンプ'
+                    if (chat.lastMessageType === 'video') return '🎥 動画'
+                    if (chat.lastMessageType === 'audio') return '🎤 音声'
+                    if (chat.lastMessageType === 'file') return '📎 ファイル'
+                    if (chat.lastMessageType === 'location') return '📍 位置情報'
+                    return previewRaw.replace(/\n+/g, ' ').slice(0, 60)
+                  })()
                   return (
                     <button
                       key={chat.id}
@@ -463,7 +652,7 @@ export default function ChatsPage() {
                         isSelected && !selectedFriendId ? 'bg-green-50' : 'hover:bg-gray-50'
                       }`}
                     >
-                      <div className="flex items-center gap-3">
+                      <div className="flex items-start gap-3">
                         {chat.friendPictureUrl ? (
                           <img src={chat.friendPictureUrl} alt="" className="w-10 h-10 rounded-full flex-shrink-0" />
                         ) : (
@@ -472,12 +661,29 @@ export default function ChatsPage() {
                           </div>
                         )}
                         <div className="min-w-0 flex-1">
-                          <p className="text-sm font-medium text-gray-900 truncate">{chat.friendName}</p>
-                          <p className="text-xs text-gray-400 mt-0.5">{formatDatetime(chat.lastMessageAt)}</p>
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                              {chat.status === 'unread' && (
+                                <span className="w-2 h-2 rounded-full bg-red-500 flex-shrink-0" aria-label="未読" />
+                              )}
+                              <p className="text-sm font-medium text-gray-900 truncate">{chat.friendName}</p>
+                            </div>
+                            <span className="text-[10px] text-gray-400 flex-shrink-0">{formatDatetime(chat.lastMessageAt)}</span>
+                          </div>
+                          <p
+                            className={`text-xs mt-0.5 truncate ${
+                              needsAttention
+                                ? 'text-gray-900 font-medium'
+                                : 'text-gray-400'
+                            }`}
+                            title={preview}
+                          >
+                            {chat.lastMessageDirection === 'outgoing' && (
+                              <span className="text-gray-400 mr-1">↪</span>
+                            )}
+                            {preview || <span className="italic text-gray-300">(まだメッセージなし)</span>}
+                          </p>
                         </div>
-                        <span className={`ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium flex-shrink-0 ${statusInfo.className}`}>
-                          {statusInfo.label}
-                        </span>
                       </div>
                     </button>
                   )
@@ -562,13 +768,15 @@ export default function ChatsPage() {
               </div>
 
               {/* Messages — LINE-style chat bubbles */}
-              <div className="flex-1 overflow-y-auto p-4 space-y-2" style={{ backgroundColor: '#7494C0' }}>
+              <div ref={messagesScrollRef} className="flex-1 overflow-y-auto p-4 space-y-2" style={{ backgroundColor: '#7494C0' }}>
                 {(!chatDetail.messages || chatDetail.messages.length === 0) ? (
                   <div className="text-center py-8">
                     <p className="text-white/60 text-sm">メッセージはまだありません。</p>
                   </div>
                 ) : (
-                  (chatDetail.messages ?? []).map((msg) => {
+                  (chatDetail.messages ?? []).map((msg, idx) => {
+                    const prevMsg = idx > 0 ? (chatDetail.messages ?? [])[idx - 1] : null
+                    const showDateSep = !prevMsg || !sameYmd(prevMsg.createdAt, msg.createdAt)
                     const isOutgoing = msg.direction === 'outgoing'
 
                     // メッセージ表示の分岐
@@ -593,35 +801,43 @@ export default function ChatsPage() {
                     }
 
                     return (
-                      <div
-                        key={msg.id}
-                        className={`flex items-end gap-2 ${isOutgoing ? 'justify-end' : 'justify-start'}`}
-                      >
-                        {/* 相手のアイコン（incoming のみ） */}
-                        {!isOutgoing && (
-                          chatDetail.friendPictureUrl ? (
-                            <img src={chatDetail.friendPictureUrl} alt="" className="w-8 h-8 rounded-full flex-shrink-0 mb-1" />
-                          ) : (
-                            <div className="w-8 h-8 rounded-full bg-gray-300 flex-shrink-0 mb-1" />
-                          )
-                        )}
-
-                        <div className={`flex flex-col ${isOutgoing ? 'items-end' : 'items-start'}`}>
-                          {/* メッセージバブル */}
-                          <div
-                            className={`max-w-[320px] px-3 py-2 text-sm break-words whitespace-pre-wrap ${
-                              isOutgoing
-                                ? 'rounded-tl-2xl rounded-tr-md rounded-bl-2xl rounded-br-2xl text-white'
-                                : 'rounded-tl-md rounded-tr-2xl rounded-bl-2xl rounded-br-2xl bg-white text-gray-900'
-                            }`}
-                            style={isOutgoing ? { backgroundColor: '#06C755' } : undefined}
-                          >
-                            {bubbleContent}
+                      <div key={msg.id}>
+                        {showDateSep && (
+                          <div className="flex justify-center my-3">
+                            <span className="text-[11px] text-white/85 bg-black/20 px-2.5 py-0.5 rounded-full">
+                              {formatYmdSlash(msg.createdAt)}
+                            </span>
                           </div>
-                          {/* 時刻 */}
-                          <span className="text-xs text-white/50 mt-0.5 px-1">
-                            {new Date(msg.createdAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}
-                          </span>
+                        )}
+                        <div
+                          className={`flex items-end gap-2 ${isOutgoing ? 'justify-end' : 'justify-start'}`}
+                        >
+                          {/* 相手のアイコン（incoming のみ） */}
+                          {!isOutgoing && (
+                            chatDetail.friendPictureUrl ? (
+                              <img src={chatDetail.friendPictureUrl} alt="" className="w-8 h-8 rounded-full flex-shrink-0 mb-1" />
+                            ) : (
+                              <div className="w-8 h-8 rounded-full bg-gray-300 flex-shrink-0 mb-1" />
+                            )
+                          )}
+
+                          <div className={`flex flex-col ${isOutgoing ? 'items-end' : 'items-start'}`}>
+                            {/* メッセージバブル */}
+                            <div
+                              className={`max-w-[320px] px-3 py-2 text-sm break-words whitespace-pre-wrap ${
+                                isOutgoing
+                                  ? 'rounded-tl-2xl rounded-tr-md rounded-bl-2xl rounded-br-2xl text-white'
+                                  : 'rounded-tl-md rounded-tr-2xl rounded-bl-2xl rounded-br-2xl bg-white text-gray-900'
+                              }`}
+                              style={isOutgoing ? { backgroundColor: '#06C755' } : undefined}
+                            >
+                              {bubbleContent}
+                            </div>
+                            {/* 時刻 */}
+                            <span className="text-xs text-white/50 mt-0.5 px-1">
+                              {new Date(msg.createdAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          </div>
                         </div>
                       </div>
                     )
@@ -651,7 +867,7 @@ export default function ChatsPage() {
 
               {/* Send Message Form */}
               <div className="px-4 py-3 border-t border-gray-200">
-                <div className="mb-2 flex items-center gap-3 text-xs text-gray-600">
+                <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-gray-600">
                   <label className="inline-flex items-center gap-2 cursor-pointer select-none">
                     <input
                       type="checkbox"
@@ -671,10 +887,29 @@ export default function ChatsPage() {
                       <option key={sec} value={sec}>{sec}秒</option>
                     ))}
                   </select>
+                  <span className="text-gray-500">送信キー:</span>
+                  <label className="flex items-center gap-1 cursor-pointer">
+                    <input
+                      type="radio"
+                      checked={sendMode === 'enter'}
+                      onChange={() => setSendMode('enter')}
+                      className="accent-green-600"
+                    />
+                    <span>Enter</span>
+                  </label>
+                  <label className="flex items-center gap-1 cursor-pointer">
+                    <input
+                      type="radio"
+                      checked={sendMode === 'shift-enter'}
+                      onChange={() => setSendMode('shift-enter')}
+                      className="accent-green-600"
+                    />
+                    <span>Shift+Enter</span>
+                  </label>
                 </div>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="text"
+                <div className="flex items-end gap-2">
+                  <textarea
+                    rows={2}
                     value={messageContent}
                     onChange={(e) => {
                       const value = e.target.value
@@ -683,6 +918,8 @@ export default function ChatsPage() {
                         void triggerLoadingAnimation(selectedChatId)
                       }
                     }}
+                    onCompositionStart={() => { isComposingRef.current = true }}
+                    onCompositionEnd={() => { isComposingRef.current = false }}
                     onFocus={() => {
                       setIsMessageInputFocused(true)
                       if (selectedChatId) {
@@ -692,7 +929,7 @@ export default function ChatsPage() {
                     onBlur={() => setIsMessageInputFocused(false)}
                     onKeyDown={handleKeyDown}
                     placeholder="メッセージを入力..."
-                    className="flex-1 text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-green-500"
+                    className="flex-1 text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-green-500 resize-none"
                   />
                   <button
                     onClick={handleSendMessage}
@@ -707,6 +944,26 @@ export default function ChatsPage() {
             </>
           ) : null}
         </div>
+
+        {/* Right-most Panel: 友だち詳細サイドバー — chat detail を開いている時のみ表示 */}
+        {/*
+          friendId は **現在の selection** を優先する。chatDetail の load 中は前の chat
+          のデータが残ったままなので、それを参照するとサイドバーだけ前の友だちを
+          表示し続けて pane 間の不整合になる。selection ID 自体が friend_id なので
+          直接渡せる (chat list SQL が `id: f.id` で friend_id を返す)。
+        */}
+        {(selectedChatId || selectedFriendId) && (
+          <div className="hidden xl:flex">
+            <FriendInfoSidebar
+              friendId={selectedFriendId || selectedChatId}
+              chatStatus={
+                chatDetail && chatDetail.id === (selectedFriendId || selectedChatId)
+                  ? { status: chatDetail.status, notes: chatDetail.notes }
+                  : undefined
+              }
+            />
+          </div>
+        )}
       </div>
       <CcPromptButton prompts={ccPrompts} />
     </div>

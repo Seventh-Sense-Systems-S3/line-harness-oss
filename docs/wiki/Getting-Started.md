@@ -42,7 +42,23 @@ LINE Login チャネルを作り、`/auth/line?ref=xxx` 経由で友だち追加
 2. 「LIFF」タブで LIFF アプリを追加
 3. エンドポイント URL: デプロイ後の Worker URL を設定（LIFF は Worker に統合されています）
 4. Scope: `profile`, `openid` を有効化
-5. 控える値:
+5. **Callback URL を設定（PC からの友だち追加に必須）**:
+
+   LINE Developers Console → LINE Login チャネル → **「LINEログイン設定」タブ**:
+   - 「**ウェブアプリでLINEログインを利用する**」を **ON** にする
+   - 「**Callback URL**」に以下を貼り付け:
+
+     ```
+     https://{your-worker}.workers.dev/auth/callback
+     ```
+
+   > **⚠️ ここが抜けると PC 経由の友だち追加が "Invalid redirect_uri" で silent fail します。**
+   > スマホ（LINE アプリ）経由は LIFF SDK が内部で auth するので Callback URL を経由しません。そのため
+   > スマホで動作確認すると素通りしますが、QR を PC で踏んだユーザーが詰むので必ず設定してください。
+
+6. 「リンクされたLINE公式アカウント」で公式アカウントを選択 → 「友だち追加オプション」を **On (aggressive)** に設定（LIFF/OAuth ログイン中に「友だち追加」を強制プロンプト）
+
+7. 控える値:
 
 | 項目 | 環境変数 |
 |------|---------|
@@ -303,5 +319,7 @@ await client.friends.addTag(friends.items[0].id, tag.id)
 | Webhook Verify 失敗 | URL誤り or Workers未デプロイ | URLとデプロイ状態を確認 |
 | 401 Unauthorized | API_KEY 不一致 | `wrangler secret list` で設定確認 |
 | 友だち追加しても登録されない | Webhook無効 or シグネチャ不一致 | LINE Console で Webhook 有効化確認 |
+| PC から QR で友だち追加できない／"Invalid redirect_uri" | LINE Login チャネルに Callback URL 未登録 | LINE Login チャネル → 「LINEログイン設定」タブ → 「ウェブアプリでLINEログインを利用する」ON → 「Callback URL」に `{worker}/auth/callback` を貼る |
+| スマホで動くのに PC で動かない | 同上（LIFF はスマホで OAuth Callback 経由しない、PC は経由する） | 同上 |
 | Cron が動かない | wrangler.toml に crons 未設定 | `[triggers] crons = ["*/5 * * * *"]` を確認 |
 | CORS エラー | origin 不一致 | Workers は `origin: '*'` で全許可（MVP） |

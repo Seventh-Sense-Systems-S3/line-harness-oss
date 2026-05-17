@@ -16,7 +16,7 @@ binding = "ASSETS"
 [[d1_databases]]
 binding = "DB"
 database_name = "line-harness"
-database_id = "YOUR_DEV_D1_DATABASE_ID"
+database_id = "7529e664-00bc-46ea-ba97-a39eab470ab5"
 
 [[r2_buckets]]
 binding = "IMAGES"
@@ -44,7 +44,6 @@ database_name = "line-crm"
 database_id = "f6958f40-8b53-4ec3-ba1b-08fc00fcb669"
 migrations_dir = "../../packages/db/migrations"
 
-
 [[env.production.r2_buckets]]
 binding = "IMAGES"
 bucket_name = "line-harness-images"
@@ -55,3 +54,13 @@ crons = ["*/5 * * * *"]
 [[env.production.services]]
 binding = "MIZUKAGAMI"
 service = "mizukagami-worker"
+
+[[env.production.services]]
+binding = "MIZUKAGAMI_DEV"
+service = "mizukagami-worker-dev"
+
+# ADR: Channel-Based Routing — DEV LINE OA からの webhook は DEV worker (Service binding) へ
+# PROD は MIZUKAGAMI binding を継続。同一 account 内の workers.dev fetch は CF の
+# self-fetch prevention 等で 404 になるため、必ず Service binding を使う。
+[env.production.vars]
+MIZUKAGAMI_DEV_LINE_CHANNEL_ID = "2010022438"

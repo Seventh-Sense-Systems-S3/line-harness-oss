@@ -18,6 +18,7 @@ import {
   upsertChatOnMessage,
   getLineAccounts,
   jstNow,
+  addTagToFriend,
 } from "@line-crm/db";
 import { fireEvent } from "../services/event-bus.js";
 import { buildMessage, expandVariables } from "../services/step-delivery.js";
@@ -25,8 +26,32 @@ import type { Env } from "../index.js";
 
 const webhook = new Hono<Env>();
 
+// LINE webhook bodies are small (events array). Cap defends against unauthenticated
+// large-payload DoS before signature verification (upstream #104). 1 MiB leaves room
+// for bursty batched deliveries (~100 events × ~5 KB) while still well below the
+// 128 MB Cloudflare Workers memory ceiling.
+const MAX_WEBHOOK_BODY_SIZE = 1024 * 1024; // 1 MiB
+
 webhook.post("/webhook", async (c) => {
+  // Pre-read size guard: reject before reading the body if Content-Length is oversized.
+  const contentLengthHeader = c.req.header("Content-Length");
+  if (contentLengthHeader) {
+    const declared = Number.parseInt(contentLengthHeader, 10);
+    if (Number.isFinite(declared) && declared > MAX_WEBHOOK_BODY_SIZE) {
+      return c.json({ status: "too_large" }, 413);
+    }
+  }
+
   const rawBody = await c.req.text();
+
+  // Post-read size guard for the case where Content-Length was absent or untrustworthy.
+  // Use UTF-8 byte count: rawBody.length counts UTF-16 code units, so multibyte
+  // payloads (Japanese/emoji) would otherwise bypass the cap.
+  const rawBodyByteLength = new TextEncoder().encode(rawBody).byteLength;
+  if (rawBodyByteLength > MAX_WEBHOOK_BODY_SIZE) {
+    return c.json({ status: "too_large" }, 413);
+  }
+
   const signature = c.req.header("X-Line-Signature") ?? "";
   const db = c.env.DB;
 
@@ -43,6 +68,8 @@ webhook.post("/webhook", async (c) => {
   let channelSecret = c.env.LINE_CHANNEL_SECRET;
   let channelAccessToken = c.env.LINE_CHANNEL_ACCESS_TOKEN;
   let matchedAccountId: string | null = null;
+  // ADR: Channel-Based Routing — DEV/PROD 振り分けに使う LINE channel_id
+  let matchedChannelId: string | null = null;
 
   if ((body as { destination?: string }).destination) {
     const accounts = await getLineAccounts(db);
@@ -57,9 +84,13 @@ webhook.post("/webhook", async (c) => {
         channelSecret = account.channel_secret;
         channelAccessToken = account.channel_access_token;
         matchedAccountId = account.id;
+        matchedChannelId = account.channel_id;
         break;
       }
     }
+    console.log(
+      `[mizu-routing-debug] destination=${(body as { destination?: string }).destination} matchedChannelId=${matchedChannelId} accountsCount=${accounts.length}`,
+    );
   }
 
   // Verify with resolved secret
@@ -136,6 +167,10 @@ webhook.post("/webhook", async (c) => {
           c.env.SUPABASE_SERVICE_ROLE_KEY,
           c.env.OWNER_LINE_USER_ID,
           posthog,
+          // ADR: Channel-Based Routing — DEV LINE OA → DEV mizukagami worker (Service binding)
+          matchedChannelId,
+          c.env.MIZUKAGAMI_DEV_LINE_CHANNEL_ID,
+          c.env.MIZUKAGAMI_DEV,
         );
       } catch (err) {
         console.error("Error handling webhook event:", err);
@@ -164,6 +199,10 @@ async function handleEvent(
   supabaseMizukagamiServiceKey?: string,
   ownerLineUserId?: string,
   posthog?: import("posthog-node").PostHog | null,
+  // ADR: Channel-Based Routing — DEV/PROD 振り分けのための任意パラメータ
+  matchedChannelId: string | null = null,
+  mizukagamiDevChannelId?: string,
+  mizukagamiDevService?: Fetcher,
 ): Promise<void> {
   if (event.type === "follow") {
     const userId =
@@ -184,7 +223,6 @@ async function handleEvent(
 
     const friend = await upsertFriend(db, {
       lineUserId: userId,
-      lineAccountId: lineAccountId ?? null,
       displayName: profile?.displayName ?? null,
       pictureUrl: profile?.pictureUrl ?? null,
       statusMessage: profile?.statusMessage ?? null,
@@ -282,6 +320,7 @@ async function handleEvent(
             const steps = await getScenarioSteps(db, scenario.id);
             const firstStep = steps[0];
             if (
+              friendScenario &&
               firstStep &&
               firstStep.delay_minutes === 0 &&
               friendScenario.status === "active"
@@ -536,12 +575,61 @@ async function handleEvent(
       .bind(logId, friend.id, incomingText, now)
       .run();
 
-    // MIZUKAGAMI Mirror Session — 水鏡 Worker に転送（最優先で処理）
-    if (mizukagamiApiKey && (mizukagamiService || mizukagamiWorkerUrl)) {
+    // ─── IGNITION 発火 — 事前登録キーワード ───
+    const trimmedIncoming = incomingText.trim();
+    if (
+      trimmedIncoming === "発火" ||
+      trimmedIncoming.toLowerCase() === "ignition"
+    ) {
       try {
-        const mizuUrl = mizukagamiService
-          ? "https://mizukagami/handle"
-          : `${mizukagamiWorkerUrl}/handle`;
+        await addTagToFriend(
+          db,
+          friend.id,
+          "e3470801-f9d2-474a-9eb0-a4dfd8983262",
+        );
+        if (replyToken) {
+          const ignitionReplyText = `"発火" 受け取りました🔥\n\n来週月曜、LP公開と同時に\nあなたに最優先でご案内します。\n\n6/2-3-4 にむけて、\n楽しみにお待ちください。`;
+          await lineClient.replyMessage(replyToken, [
+            { type: "text", text: ignitionReplyText },
+          ]);
+          const replyLogId = crypto.randomUUID();
+          await db
+            .prepare(
+              `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, created_at)
+               VALUES (?, ?, 'outgoing', 'text', ?, NULL, NULL, ?)`,
+            )
+            .bind(replyLogId, friend.id, ignitionReplyText, jstNow())
+            .run();
+        }
+      } catch (err) {
+        console.error("[ignition handler] error:", err);
+      }
+      return;
+    }
+    // ─────────────────────────────────────────────────
+
+    // MIZUKAGAMI Mirror Session — 水鏡 Worker に転送（最優先で処理）
+    // ADR: Channel-Based Routing — DEV LINE OA からの message は DEV worker URL に振る。
+    // それ以外は従来通り PROD Service binding (mizukagamiService) or fallback URL。
+    const isDevChannel = Boolean(
+      mizukagamiDevChannelId &&
+      matchedChannelId &&
+      matchedChannelId === mizukagamiDevChannelId &&
+      mizukagamiDevService,
+    );
+    console.log(
+      `[mizu-routing-debug] matchedChannelId=${matchedChannelId} devChannelId=${mizukagamiDevChannelId} devSvc=${mizukagamiDevService ? "set" : "unset"} isDevChannel=${isDevChannel}`,
+    );
+    if (
+      mizukagamiApiKey &&
+      (isDevChannel || mizukagamiService || mizukagamiWorkerUrl)
+    ) {
+      try {
+        const mizuUrl = isDevChannel
+          ? "https://mizukagami-dev/handle"
+          : mizukagamiService
+            ? "https://mizukagami/handle"
+            : `${mizukagamiWorkerUrl}/handle`;
         const replyToken = (event as unknown as { replyToken?: string })
           .replyToken;
         const req = new Request(mizuUrl, {
@@ -557,9 +645,15 @@ async function handleEvent(
             replyToken,
           }),
         });
-        const mizuRes = mizukagamiService
-          ? await mizukagamiService.fetch(req)
-          : await fetch(req);
+        const mizuRes =
+          isDevChannel && mizukagamiDevService
+            ? await mizukagamiDevService.fetch(req)
+            : mizukagamiService
+              ? await mizukagamiService.fetch(req)
+              : await fetch(req);
+        console.log(
+          `[mizu-routing-debug] mizuUrl=${mizuUrl} status=${mizuRes.status} ok=${mizuRes.ok}`,
+        );
         if (mizuRes.ok) {
           const mizuResult = await mizuRes.json<{ handled: boolean }>();
           if (mizuResult.handled) {

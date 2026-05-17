@@ -26,15 +26,47 @@ export function registerSendMessage(server: McpServer): void {
         .describe(
           "Custom notification preview text for Flex Messages (shown on lock screen). If omitted, auto-extracted from Flex content.",
         ),
+      isTest: z
+        .boolean()
+        .default(false)
+        .describe(
+          "Mark as test send. Prepends 【テスト配信】 to text messages, adds test banner to flex messages.",
+        ),
     },
-    async ({ friendId, content, messageType, altText }) => {
+    async ({ friendId, content, messageType, altText, isTest }) => {
       try {
         const client = getClient();
+
+        // Add test label
+        let finalContent = content;
+        if (isTest) {
+          if (messageType === "text") {
+            finalContent = `【テスト配信】\n${content}`;
+          } else if (messageType === "flex") {
+            try {
+              const flex = JSON.parse(content);
+              // Wrap in a carousel with a test banner
+              finalContent = JSON.stringify({
+                type: "bubble",
+                header: {
+                  type: "box",
+                  layout: "vertical",
+                  backgroundColor: "#FFE066",
+                  paddingAll: "8px",
+                  contents: [{ type: "text", text: "⚠️ テスト配信", size: "sm", weight: "bold", color: "#333", align: "center" }],
+                },
+                ...(flex.type === "bubble" ? { body: flex.body, footer: flex.footer } : { body: { type: "box", layout: "vertical", contents: [{ type: "text", text: "テスト配信", wrap: true }] } }),
+              });
+            } catch {
+              finalContent = content;
+            }
+          }
+        }
 
         // Auto-track URLs in flex messages
         const { content: trackedContent } = await autoTrackUrls(
           client,
-          content,
+          finalContent,
           messageType,
           `DM to ${friendId.slice(0, 8)}`,
         );

@@ -1,5 +1,5 @@
 import Link from 'next/link'
-import type { Scenario } from '@line-crm/shared'
+import type { Scenario, DeliveryMode } from '@line-crm/shared'
 
 type ScenarioWithCount = Scenario & { stepCount?: number }
 
@@ -7,6 +7,21 @@ const triggerLabels: Record<string, string> = {
   friend_add: '友だち追加時',
   tag_added: 'タグ付与時',
   manual: '手動',
+}
+
+const deliveryModeStyles: Record<DeliveryMode, { bg: string; text: string; label: string }> = {
+  relative: { bg: 'bg-gray-100', text: 'text-gray-600', label: 'Legacy' },
+  elapsed: { bg: 'bg-blue-50', text: 'text-blue-700', label: '経過時間' },
+  absolute_time: { bg: 'bg-amber-50', text: 'text-amber-700', label: '時刻指定' },
+}
+
+function ModeBadge({ mode }: { mode?: DeliveryMode }) {
+  const s = deliveryModeStyles[mode ?? 'relative']
+  return (
+    <span className={`shrink-0 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${s.bg} ${s.text}`}>
+      {s.label}
+    </span>
+  )
 }
 
 interface ScenarioListProps {
@@ -37,15 +52,18 @@ export default function ScenarioList({ scenarios, onToggleActive, onDelete, load
             >
               {scenario.name}
             </Link>
-            <span
-              className={`shrink-0 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-                scenario.isActive
-                  ? 'bg-green-100 text-green-700'
-                  : 'bg-gray-100 text-gray-500'
-              }`}
-            >
-              {scenario.isActive ? '有効' : '無効'}
-            </span>
+            <div className="flex items-center gap-1.5">
+              <ModeBadge mode={scenario.deliveryMode} />
+              <span
+                className={`shrink-0 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+                  scenario.isActive
+                    ? 'bg-green-100 text-green-700'
+                    : 'bg-gray-100 text-gray-500'
+                }`}
+              >
+                {scenario.isActive ? '有効' : '無効'}
+              </span>
+            </div>
           </div>
 
           {/* Description */}

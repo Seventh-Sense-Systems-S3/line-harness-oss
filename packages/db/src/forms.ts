@@ -39,6 +39,64 @@ export async function getForms(db: D1Database): Promise<Form[]> {
   return result.results;
 }
 
+export interface FormUsedByAccount {
+  id: string;
+  name: string;
+  country: string | null;
+  displayOrder: number;
+  count: number;
+}
+
+export interface FormWithStats extends Form {
+  last_submitted_at: string | null;
+  used_by_accounts: FormUsedByAccount[];
+}
+
+export async function getFormsWithStats(db: D1Database): Promise<FormWithStats[]> {
+  // Single query: forms + last submission + per-account submission counts.
+  // json_group_array returns '[]' (not NULL) when subquery yields no rows.
+  const result = await db
+    .prepare(
+      `SELECT
+         f.*,
+         (SELECT MAX(created_at) FROM form_submissions WHERE form_id = f.id) AS last_submitted_at,
+         (SELECT json_group_array(
+                   json_object(
+                     'id', la.id,
+                     'name', la.name,
+                     'country', la.country,
+                     'displayOrder', la.display_order,
+                     'count', sub.cnt
+                   )
+                 )
+            FROM (
+              SELECT fr.line_account_id, COUNT(*) AS cnt
+              FROM form_submissions fs
+              JOIN friends fr ON fr.id = fs.friend_id
+              WHERE fs.form_id = f.id AND fr.line_account_id IS NOT NULL
+              GROUP BY fr.line_account_id
+            ) sub
+            JOIN line_accounts la ON la.id = sub.line_account_id) AS used_by_accounts_json
+       FROM forms f
+       ORDER BY f.created_at DESC`,
+    )
+    .all<Form & { last_submitted_at: string | null; used_by_accounts_json: string | null }>();
+
+  return result.results.map((row) => {
+    const { used_by_accounts_json, ...rest } = row;
+    let parsed: FormUsedByAccount[] = [];
+    if (used_by_accounts_json) {
+      try {
+        const arr = JSON.parse(used_by_accounts_json) as FormUsedByAccount[];
+        parsed = arr.sort((a, b) => a.displayOrder - b.displayOrder);
+      } catch {
+        parsed = [];
+      }
+    }
+    return { ...rest, used_by_accounts: parsed };
+  });
+}
+
 export async function getFormById(db: D1Database, id: string): Promise<Form | null> {
   return db
     .prepare(`SELECT * FROM forms WHERE id = ?`)

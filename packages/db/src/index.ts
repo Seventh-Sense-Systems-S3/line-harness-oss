@@ -2,6 +2,8 @@ export { jstNow, toJstString, isTimeBefore } from './utils';
 export * from './friends';
 export * from './tags';
 export * from './scenarios';
+export * from './scenario-schedule';
+export * from './scenario-resolve';
 export * from './broadcasts';
 export * from './users';
 export * from './line-accounts';
@@ -25,6 +27,7 @@ export * from './staff';
 export * from './auto-replies';
 export * from './traffic-pools';
 export * from './message-templates';
+export * from './rich-menus';
 
 /**
  * Thin wrapper around D1Database.

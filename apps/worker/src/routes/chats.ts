@@ -9,6 +9,8 @@ import {
   getChats,
   getChatById,
   createChat,
+  getFriendById,
+  getLineAccountById,
   updateChat,
   jstNow,
 } from '@line-crm/db';
@@ -43,6 +45,78 @@ async function startLoadingAnimation(
         : `LINE API error: ${response.status}`,
     );
   }
+}
+
+type ChatLike = {
+  id: string;
+  friend_id: string;
+  operator_id: string | null;
+  status: string;
+  notes: string | null;
+  last_message_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+// id は chats.id もしくは friend.id のどちらか。friend.id のときは chats 行を遅延作成する。
+// push / broadcast / scenario 配信だけを受けた友だちもチャット画面に現れるため、ここで lazy create が必要。
+// 新規作成する場合は status='resolved' にし、last_message_at は messages_log の実際の最終時刻を使う
+// （jstNow を入れると一覧並び順が壊れるため）。
+async function resolveOrCreateChat(db: D1Database, id: string): Promise<ChatLike | null> {
+  const existing = await getChatById(db, id);
+  if (existing) return existing as ChatLike;
+  const friend = await getFriendById(db, id);
+  if (!friend) return null;
+  const byFriend = await db
+    .prepare(`SELECT * FROM chats WHERE friend_id = ? ORDER BY created_at ASC LIMIT 1`)
+    .bind(friend.id)
+    .first<ChatLike>();
+  if (byFriend) return byFriend;
+
+  const lastMsg = await db
+    .prepare(
+      `SELECT MAX(created_at) AS last FROM messages_log WHERE friend_id = ? AND (delivery_type IS NULL OR delivery_type != 'test')`,
+    )
+    .bind(friend.id)
+    .first<{ last: string | null }>();
+  const newId = crypto.randomUUID();
+  const now = jstNow();
+  const lastMessageAt = lastMsg?.last ?? null;
+  // 同時実行で二重挿入されないように WHERE NOT EXISTS で原子挿入。挿入結果に関わらず最古行を返して収束。
+  await db
+    .prepare(
+      `INSERT INTO chats (id, friend_id, status, last_message_at, created_at, updated_at)
+       SELECT ?, ?, 'resolved', ?, ?, ?
+       WHERE NOT EXISTS (SELECT 1 FROM chats WHERE friend_id = ?)`,
+    )
+    .bind(newId, friend.id, lastMessageAt, now, now, friend.id)
+    .run();
+  return (await db
+    .prepare(`SELECT * FROM chats WHERE friend_id = ? ORDER BY created_at ASC LIMIT 1`)
+    .bind(friend.id)
+    .first<ChatLike>())!;
+}
+
+async function resolveFriendAndAccessToken(
+  db: D1Database,
+  friendId: string,
+  defaultAccessToken: string,
+) {
+  const friend = await getFriendById(db, friendId);
+  if (!friend) {
+    return { friend: null, accessToken: defaultAccessToken };
+  }
+
+  if (!friend.line_account_id) {
+    return { friend, accessToken: defaultAccessToken };
+  }
+
+  const account = await getLineAccountById(db, friend.line_account_id);
+  if (!account) {
+    return { friend, accessToken: defaultAccessToken };
+  }
+
+  return { friend, accessToken: account.channel_access_token };
 }
 
 // ========== オペレーターCRUD ==========
@@ -112,15 +186,118 @@ chats.get('/api/chats', async (c) => {
     const operatorId = c.req.query('operatorId') ?? undefined;
     const lineAccountId = c.req.query('lineAccountId') ?? undefined;
 
-    // JOIN friends to get display_name and picture_url
-    let sql = `SELECT c.*, f.display_name, f.picture_url, f.line_user_id
-               FROM chats c
-               LEFT JOIN friends f ON c.friend_id = f.id`;
+    // List everyone who has any message history (incoming or outgoing — push/broadcast/scenario included)
+    // PLUS any chats row that exists even before any messages_log entry is written.
+    // Source = messages_log ∪ chats.friend_id; chats は status/operator/notes 用に LEFT JOIN で最新1件だけ採用。
+    //
+    // recent_msg CTE で friend_id ごとに最新の messages_log 行をひとつ取得し、本文 preview と
+    // direction (incoming/outgoing) を一覧に出す。
+    //
+    // パフォーマンス対策:
+    //   1. lineAccountId 指定時は scoped_friends CTE で先に対象 friend を絞ってから messages_log
+    //      を ranking する (アカ別 inbox が他アカの履歴をスキャンしないように)。
+    //   2. content は text のみ先頭 200 文字まで切り詰めて返す (flex/image など raw JSON を返すと
+    //      broadcast 後の rows で multi-MB レスポンスになる)。
+    const accountFilterSql = lineAccountId
+      ? `friend_id IN (SELECT id FROM friends WHERE line_account_id = ?)`
+      : `1=1`;
+    let sql = `
+      WITH activity AS (
+        SELECT friend_id, MAX(created_at) AS last_message_at
+        FROM messages_log
+        WHERE (delivery_type IS NULL OR delivery_type != 'test')
+          AND ${accountFilterSql}
+        GROUP BY friend_id
+        UNION ALL
+        SELECT friend_id, last_message_at
+        FROM chats
+        WHERE ${accountFilterSql}
+      ),
+      deduped AS (
+        SELECT friend_id, MAX(last_message_at) AS last_message_at
+        FROM activity
+        GROUP BY friend_id
+      ),
+      -- preview は **最新の incoming (ユーザー発)** を優先する。auto_reply / scenario 等の
+      -- outbound が直後に書き込まれて preview を上書きすると「ユーザーが何と言ったか」が
+      -- 一覧から見えなくなる (operator triage の主目的が損なわれる)。
+      -- incoming が無い (broadcast push など outbound only) chat は最新 outbound にフォールバック。
+      -- text 以外 (flex/image/sticker 等) は content を NULL にして payload size を抑える
+      -- (フロントは type で 📋 Flex / 📷 画像 等のラベルを出すので content は不要)。
+      -- preview は **常に最新メッセージ** を表示する。postback (rich menu tap) も含む。
+      -- preview text と displayed time を揃えるための単純化 (deprioritize すると
+      -- 「最新は postback だが preview は古い text」の time mismatch が起きるため)。
+      -- 注: postback.data が opaque な JSON token だと一覧で人間には読めない値が出るが、
+      -- それは admin が rich menu の postback.data を人間向け文言にすべき config 問題。
+      -- (LINE 仕様: postback.displayText は admin が設定可能、それを data に揃えるのが推奨)
+      ranked_in AS (
+        SELECT friend_id,
+          CASE WHEN message_type = 'text' THEN SUBSTR(content, 1, 200) ELSE NULL END AS content,
+          direction, message_type, created_at,
+          ROW_NUMBER() OVER (PARTITION BY friend_id ORDER BY created_at DESC) AS rn
+        FROM messages_log
+        WHERE direction = 'incoming'
+          AND (delivery_type IS NULL OR delivery_type != 'test')
+          AND ${accountFilterSql}
+      ),
+      ranked_any AS (
+        SELECT friend_id,
+          CASE WHEN message_type = 'text' THEN SUBSTR(content, 1, 200) ELSE NULL END AS content,
+          direction, message_type, created_at,
+          ROW_NUMBER() OVER (PARTITION BY friend_id ORDER BY created_at DESC) AS rn
+        FROM messages_log
+        WHERE (delivery_type IS NULL OR delivery_type != 'test')
+          AND ${accountFilterSql}
+      ),
+      -- ra (any direction の最新) を master にして、ri (incoming の最新) を LEFT JOIN。
+      -- COALESCE で ri 優先 → incoming があればそれ、無ければ outbound にフォールバック。
+      -- created_at も preview の元メッセージに合わせて返す (一覧の時刻と preview text が
+      -- 別メッセージを指して mismatch する事故を防ぐ)。
+      recent_msg AS (
+        SELECT
+          ra.friend_id,
+          COALESCE(ri.content, ra.content) AS content,
+          COALESCE(ri.direction, ra.direction) AS direction,
+          COALESCE(ri.message_type, ra.message_type) AS message_type,
+          COALESCE(ri.created_at, ra.created_at) AS preview_at
+        FROM (SELECT * FROM ranked_any WHERE rn = 1) ra
+        LEFT JOIN (SELECT * FROM ranked_in WHERE rn = 1) ri ON ra.friend_id = ri.friend_id
+      )
+      SELECT
+        f.id AS id,
+        f.id AS friend_id,
+        f.display_name,
+        f.picture_url,
+        f.line_user_id,
+        f.line_account_id,
+        c.operator_id,
+        COALESCE(c.status, 'resolved') AS status,
+        c.notes,
+        -- last_message_at は preview メッセージの時刻に揃える (一覧 row の時刻表示と preview が
+        -- 別メッセージを指す mismatch を防ぐ)。preview が無い (chats 行のみ存在) ケースは
+        -- d.last_message_at にフォールバック。
+        COALESCE(rm.preview_at, d.last_message_at) AS last_message_at,
+        rm.content AS last_message_content,
+        rm.direction AS last_message_direction,
+        rm.message_type AS last_message_type,
+        COALESCE(c.created_at, d.last_message_at) AS created_at,
+        COALESCE(c.updated_at, d.last_message_at) AS updated_at
+      FROM deduped d
+      INNER JOIN friends f ON f.id = d.friend_id
+      LEFT JOIN chats c ON c.id = (
+        SELECT id FROM chats WHERE friend_id = f.id ORDER BY created_at DESC LIMIT 1
+      )
+      LEFT JOIN recent_msg rm ON rm.friend_id = f.id
+    `;
+    // accountFilterSql に '?' が複数 (4 箇所) あるので、bindings は事前に積んでおく。
+    const ctePrebindings: unknown[] = lineAccountId
+      ? [lineAccountId, lineAccountId, lineAccountId, lineAccountId]
+      : [];
     const conditions: string[] = [];
     const bindings: unknown[] = [];
 
     if (status) {
-      conditions.push('c.status = ?');
+      conditions.push(`COALESCE(c.status, 'resolved') = ?`);
       bindings.push(status);
     }
     if (operatorId) {
@@ -135,10 +312,12 @@ chats.get('/api/chats', async (c) => {
     if (conditions.length > 0) {
       sql += ' WHERE ' + conditions.join(' AND ');
     }
-    sql += ' ORDER BY c.last_message_at DESC';
+    sql += ' ORDER BY d.last_message_at DESC';
 
-    const stmt = bindings.length > 0
-      ? c.env.DB.prepare(sql).bind(...bindings)
+    // CTE 内 placeholder (4 個) → 外側 WHERE placeholder の順に bind する
+    const allBindings = [...ctePrebindings, ...bindings];
+    const stmt = allBindings.length > 0
+      ? c.env.DB.prepare(sql).bind(...allBindings)
       : c.env.DB.prepare(sql);
     const result = await stmt.all();
 
@@ -153,6 +332,9 @@ chats.get('/api/chats', async (c) => {
         status: ch.status,
         notes: ch.notes,
         lastMessageAt: ch.last_message_at,
+        lastMessageContent: ch.last_message_content || null,
+        lastMessageDirection: ch.last_message_direction || null,
+        lastMessageType: ch.last_message_type || null,
         createdAt: ch.created_at,
         updatedAt: ch.updated_at,
       })),
@@ -165,33 +347,67 @@ chats.get('/api/chats', async (c) => {
 
 chats.get('/api/chats/:id', async (c) => {
   try {
-    const item = await getChatById(c.env.DB, c.req.param('id'));
-    if (!item) return c.json({ success: false, error: 'Chat not found' }, 404);
+    const rawId = c.req.param('id');
 
-    // 友だち情報を取得
+    // id は chats.id または friend.id のどちらでもOK。
+    // 優先順: chats.id 一致 → friend.id のとき chats.friend_id 最新行 → 何も無ければ friend のみで synthetic
+    let chatRow = await getChatById(c.env.DB, rawId);
+    let friendId: string | null = null;
+
+    if (!chatRow) {
+      const friendRow = await getFriendById(c.env.DB, rawId);
+      if (!friendRow) return c.json({ success: false, error: 'Chat not found' }, 404);
+      friendId = friendRow.id;
+      // 同じ friend に紐づく chats 行があれば採用（lazy-create 後の再読みで status/notes を拾うため）
+      const existing = await c.env.DB
+        .prepare(`SELECT * FROM chats WHERE friend_id = ? ORDER BY created_at DESC LIMIT 1`)
+        .bind(friendRow.id)
+        .first<{ id: string; friend_id: string; operator_id: string | null; status: string; notes: string | null; last_message_at: string | null; created_at: string; updated_at: string }>();
+      if (existing) {
+        chatRow = existing as Awaited<ReturnType<typeof getChatById>>;
+      }
+    }
+
+    const resolvedFriendId = chatRow?.friend_id ?? friendId!;
+    // 公開 ID は常に friend_id に統一する（lazy-create で ID が変わるのを防ぐため）。
+    const responseId = resolvedFriendId;
+    const operatorId = chatRow?.operator_id ?? null;
+    const status = chatRow?.status ?? 'resolved';
+    const notes = chatRow?.notes ?? null;
+    const lastMessageAt = chatRow?.last_message_at ?? null;
+    const createdAt = chatRow?.created_at ?? null;
+
     const friend = await c.env.DB
       .prepare(`SELECT display_name, picture_url, line_user_id FROM friends WHERE id = ?`)
-      .bind(item.friend_id)
+      .bind(resolvedFriendId)
       .first<{ display_name: string | null; picture_url: string | null; line_user_id: string }>();
 
-    // チャットに関連するメッセージログも取得
+    // 新しい1000件を取って昇順に戻す。LIMIT 200 ASC だと古い200件だけで broadcast/scenario 等の
+    // 新しい push が欠落していた（Shu で 481件中 281件欠落のバグあり）。一覧側と同様に test 配信は除外。
+    // 現状の最重量ユーザー(481件)の2倍バッファ。これ以上の履歴はページング未実装（Phase 2 TODO）。
     const messages = await c.env.DB
-      .prepare(`SELECT id, friend_id, direction, message_type, content, created_at FROM messages_log WHERE friend_id = ? ORDER BY created_at ASC LIMIT 200`)
-      .bind(item.friend_id)
+      .prepare(
+        `SELECT id, friend_id, direction, message_type, content, created_at
+         FROM messages_log
+         WHERE friend_id = ? AND (delivery_type IS NULL OR delivery_type != 'test')
+         ORDER BY created_at DESC LIMIT 1000`,
+      )
+      .bind(resolvedFriendId)
       .all();
+    messages.results = (messages.results as Record<string, unknown>[]).reverse();
 
     return c.json({
       success: true,
       data: {
-        id: item.id,
-        friendId: item.friend_id,
+        id: responseId,
+        friendId: resolvedFriendId,
         friendName: friend?.display_name || '名前なし',
         friendPictureUrl: friend?.picture_url || null,
-        operatorId: item.operator_id,
-        status: item.status,
-        notes: item.notes,
-        lastMessageAt: item.last_message_at,
-        createdAt: item.created_at,
+        operatorId,
+        status,
+        notes,
+        lastMessageAt,
+        createdAt,
         messages: (messages.results as Record<string, unknown>[]).map((m) => ({
           id: m.id,
           direction: m.direction,
@@ -228,13 +444,16 @@ chats.post('/api/chats', async (c) => {
 chats.put('/api/chats/:id', async (c) => {
   try {
     const id = c.req.param('id');
+    const resolved = await resolveOrCreateChat(c.env.DB, id);
+    if (!resolved) return c.json({ success: false, error: 'Not found' }, 404);
     const body = await c.req.json<{ operatorId?: string | null; status?: string; notes?: string }>();
-    await updateChat(c.env.DB, id, body);
-    const updated = await getChatById(c.env.DB, id);
+    await updateChat(c.env.DB, resolved.id, body);
+    const updated = await getChatById(c.env.DB, resolved.id);
     if (!updated) return c.json({ success: false, error: 'Not found' }, 404);
     return c.json({
       success: true,
-      data: { id: updated.id, friendId: updated.friend_id, operatorId: updated.operator_id, status: updated.status, notes: updated.notes },
+      // 公開 ID は friend_id に統一
+      data: { id: updated.friend_id, friendId: updated.friend_id, operatorId: updated.operator_id, status: updated.status, notes: updated.notes },
     });
   } catch (err) {
     console.error('PUT /api/chats/:id error:', err);
@@ -246,7 +465,7 @@ chats.put('/api/chats/:id', async (c) => {
 chats.post('/api/chats/:id/loading', async (c) => {
   try {
     const chatId = c.req.param('id');
-    const chat = await getChatById(c.env.DB, chatId);
+    const chat = await resolveOrCreateChat(c.env.DB, chatId);
     if (!chat) return c.json({ success: false, error: 'Chat not found' }, 404);
 
     let loadingSecondsInput: number | undefined;
@@ -258,14 +477,15 @@ chats.post('/api/chats/:id/loading', async (c) => {
     }
     const loadingSeconds = clampLoadingSeconds(loadingSecondsInput);
 
-    const friend = await c.env.DB
-      .prepare(`SELECT * FROM friends WHERE id = ?`)
-      .bind(chat.friend_id)
-      .first<{ id: string; line_user_id: string }>();
+    const { friend, accessToken } = await resolveFriendAndAccessToken(
+      c.env.DB,
+      chat.friend_id,
+      c.env.LINE_CHANNEL_ACCESS_TOKEN,
+    );
     if (!friend) return c.json({ success: false, error: 'Friend not found' }, 404);
 
     await startLoadingAnimation(
-      c.env.LINE_CHANNEL_ACCESS_TOKEN,
+      accessToken,
       friend.line_user_id,
       loadingSeconds,
     );
@@ -282,21 +502,22 @@ chats.post('/api/chats/:id/loading', async (c) => {
 chats.post('/api/chats/:id/send', async (c) => {
   try {
     const chatId = c.req.param('id');
-    const chat = await getChatById(c.env.DB, chatId);
+    const chat = await resolveOrCreateChat(c.env.DB, chatId);
     if (!chat) return c.json({ success: false, error: 'Chat not found' }, 404);
 
     const body = await c.req.json<{ messageType?: string; content: string }>();
     if (!body.content) return c.json({ success: false, error: 'content is required' }, 400);
 
-    const friend = await c.env.DB
-      .prepare(`SELECT * FROM friends WHERE id = ?`)
-      .bind(chat.friend_id)
-      .first<{ id: string; line_user_id: string }>();
+    const { friend, accessToken } = await resolveFriendAndAccessToken(
+      c.env.DB,
+      chat.friend_id,
+      c.env.LINE_CHANNEL_ACCESS_TOKEN,
+    );
     if (!friend) return c.json({ success: false, error: 'Friend not found' }, 404);
 
     // LINE APIでメッセージ送信
     const { LineClient } = await import('@line-crm/line-sdk');
-    const lineClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
+    const lineClient = new LineClient(accessToken);
     const messageType = body.messageType ?? 'text';
 
     if (messageType === 'text') {
@@ -309,12 +530,12 @@ chats.post('/api/chats/:id/send', async (c) => {
     // メッセージログに記録
     const logId = crypto.randomUUID();
     await c.env.DB
-      .prepare(`INSERT INTO messages_log (id, friend_id, direction, message_type, content, created_at) VALUES (?, ?, 'outgoing', ?, ?, ?)`)
+      .prepare(`INSERT INTO messages_log (id, friend_id, direction, message_type, content, source, created_at) VALUES (?, ?, 'outgoing', ?, ?, 'manual', ?)`)
       .bind(logId, friend.id, messageType, body.content, jstNow())
       .run();
 
-    // チャットの最終メッセージ日時を更新
-    await updateChat(c.env.DB, chatId, { status: 'in_progress', lastMessageAt: jstNow() });
+    // チャットの最終メッセージ日時を更新（chat.id を直接使う — friend_id で呼ばれても resolveOrCreateChat 済み）
+    await updateChat(c.env.DB, chat.id, { status: 'in_progress', lastMessageAt: jstNow() });
 
     return c.json({ success: true, data: { sent: true, messageId: logId } });
   } catch (err) {
