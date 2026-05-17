@@ -1,4 +1,4 @@
-import { jstNow } from './utils.js';
+import { jstNow } from "./utils.js";
 export interface Friend {
   id: string;
   line_user_id: string;
@@ -136,6 +136,7 @@ export async function setFriendFirstTrackedLinkIfNull(
 
 export interface UpsertFriendInput {
   lineUserId: string;
+  lineAccountId?: string | null;
   displayName?: string | null;
   pictureUrl?: string | null;
   statusMessage?: string | null;
@@ -156,13 +157,21 @@ export async function upsertFriend(
              picture_url = ?,
              status_message = ?,
              is_following = 1,
+             line_account_id = COALESCE(?, line_account_id),
              updated_at = ?
          WHERE line_user_id = ?`,
       )
       .bind(
-        'displayName' in input ? (input.displayName ?? null) : existing.display_name,
-        'pictureUrl' in input ? (input.pictureUrl ?? null) : existing.picture_url,
-        'statusMessage' in input ? (input.statusMessage ?? null) : existing.status_message,
+        "displayName" in input
+          ? (input.displayName ?? null)
+          : existing.display_name,
+        "pictureUrl" in input
+          ? (input.pictureUrl ?? null)
+          : existing.picture_url,
+        "statusMessage" in input
+          ? (input.statusMessage ?? null)
+          : existing.status_message,
+        input.lineAccountId ?? null,
         now,
         input.lineUserId,
       )
@@ -174,12 +183,13 @@ export async function upsertFriend(
   const id = crypto.randomUUID();
   await db
     .prepare(
-      `INSERT INTO friends (id, line_user_id, display_name, picture_url, status_message, is_following, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
+      `INSERT INTO friends (id, line_user_id, line_account_id, display_name, picture_url, status_message, is_following, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`,
     )
     .bind(
       id,
       input.lineUserId,
+      input.lineAccountId ?? null,
       input.displayName ?? null,
       input.pictureUrl ?? null,
       input.statusMessage ?? null,
@@ -212,7 +222,9 @@ export async function getMergedMetadataByUserId(
   userId: string,
 ): Promise<Record<string, unknown>> {
   const result = await db
-    .prepare(`SELECT metadata FROM friends WHERE user_id = ? AND metadata IS NOT NULL AND metadata != '{}'`)
+    .prepare(
+      `SELECT metadata FROM friends WHERE user_id = ? AND metadata IS NOT NULL AND metadata != '{}'`,
+    )
     .bind(userId)
     .all<{ metadata: string }>();
   const merged: Record<string, unknown> = {};
@@ -220,11 +232,13 @@ export async function getMergedMetadataByUserId(
     try {
       const meta = JSON.parse(row.metadata);
       for (const [k, v] of Object.entries(meta)) {
-        if (v != null && v !== '' && !(merged[k] != null && merged[k] !== '')) {
+        if (v != null && v !== "" && !(merged[k] != null && merged[k] !== "")) {
           merged[k] = v;
         }
       }
-    } catch { /* skip invalid JSON */ }
+    } catch {
+      /* skip invalid JSON */
+    }
   }
   return merged;
 }
