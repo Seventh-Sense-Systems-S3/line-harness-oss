@@ -76,6 +76,7 @@ import { profileRefresh } from "./routes/profile-refresh.js";
 import { richMenuGroups } from "./routes/rich-menu-groups.js";
 import { notifications } from "./routes/notifications.js";
 import { supabaseNotify } from "./routes/supabase-notify.js";
+import { summit } from "./routes/summit.js";
 
 export type Env = {
   Bindings: {
@@ -184,6 +185,9 @@ app.route("/", profileRefresh);
 app.route("/", richMenuGroups);
 app.route("/", notifications);
 app.route("/", supabaseNotify);
+// SUMMIT 2026-05-17 live-demo push endpoint (POST /summit/push, internal auth).
+// サミット後は撤去する。
+app.route("/", summit);
 
 // Self-hosted QR code proxy — prevents leaking ref tokens to third-party services
 app.get("/api/qr", async (c) => {
