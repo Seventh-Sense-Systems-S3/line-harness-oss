@@ -105,6 +105,12 @@ export type Env = {
     OWNER_LINE_USER_ID: string;
     SUPABASE_URL?: string;
     SUPABASE_SERVICE_ROLE_KEY?: string;
+    // ─── SUMMIT 2026-05-17 live-demo inbox (phoenix-memory-os) ───
+    // 機能 2: SUMMIT タグ持ち友達の自由文を Hermes 用 summit_demo_inbox に保存。
+    // 未設定なら SUPABASE_URL/SERVICE_ROLE_KEY (= mizukagami) に fallback。
+    // サミット後は撤去する。
+    SUMMIT_SUPABASE_URL?: string;
+    SUMMIT_SUPABASE_SERVICE_KEY?: string;
     // ─── PostHog (analytics) ───
     POSTHOG_API_KEY?: string;
     POSTHOG_HOST?: string;

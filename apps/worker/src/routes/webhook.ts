@@ -19,6 +19,7 @@ import {
   getLineAccounts,
   jstNow,
   addTagToFriend,
+  scenarioMatchesAccount,
 } from "@line-crm/db";
 import { fireEvent } from "../services/event-bus.js";
 import { buildMessage, expandVariables } from "../services/step-delivery.js";
@@ -31,6 +32,20 @@ const webhook = new Hono<Env>();
 // for bursty batched deliveries (~100 events × ~5 KB) while still well below the
 // 128 MB Cloudflare Workers memory ceiling.
 const MAX_WEBHOOK_BODY_SIZE = 1024 * 1024; // 1 MiB
+
+// ─── SUMMIT_20260517 ライブデモ定数 ───────────────────────────
+// 既存「発火」(IGNITION_発火, e3470801-...) パターンと完全に同じ運用:
+//   - tag UUID は固定 (migration 041 で seed)
+//   - キーワード「サミット」送信 → SUMMIT_20260517 タグ自動付与 + 歓迎返信 (機能 1)
+//   - SUMMIT タグ持ちの自由文 → 受信確認返信 + Supabase 保存 (機能 2, Hermes 用)
+// サミット (2026-05-17) 終了後はこの定数とハンドラを撤去する。
+const SUMMIT_TAG_ID = "b2d4a3f0-5e17-4cae-9a01-20260517a001";
+const SUMMIT_KEYWORD = "サミット";
+const SUMMIT_ID = "SUMMIT_20260517";
+const SUMMIT_WELCOME_REPLY =
+  "サミットへようこそ。子竜さんの分身 AI 試作版とお話できます。なにか叶えたいことを1つ書いて送ってみてください。";
+const SUMMIT_ACK_REPLY =
+  "届きました！子竜さんがヘルメスに指示を出します。少しお待ちください…";
 
 webhook.post("/webhook", async (c) => {
   // Pre-read size guard: reject before reading the body if Content-Length is oversized.
@@ -171,6 +186,9 @@ webhook.post("/webhook", async (c) => {
           matchedChannelId,
           c.env.MIZUKAGAMI_DEV_LINE_CHANNEL_ID,
           c.env.MIZUKAGAMI_DEV,
+          // SUMMIT 2026-05-17 live demo: phoenix-memory-os Supabase (fallback to SUPABASE_URL)
+          c.env.SUMMIT_SUPABASE_URL ?? c.env.SUPABASE_URL,
+          c.env.SUMMIT_SUPABASE_SERVICE_KEY ?? c.env.SUPABASE_SERVICE_ROLE_KEY,
         );
       } catch (err) {
         console.error("Error handling webhook event:", err);
@@ -203,6 +221,9 @@ async function handleEvent(
   matchedChannelId: string | null = null,
   mizukagamiDevChannelId?: string,
   mizukagamiDevService?: Fetcher,
+  // SUMMIT 2026-05-17 live demo: phoenix-memory-os Supabase
+  summitSupabaseUrl?: string,
+  summitSupabaseServiceKey?: string,
 ): Promise<void> {
   if (event.type === "follow") {
     const userId =
@@ -226,6 +247,7 @@ async function handleEvent(
       displayName: profile?.displayName ?? null,
       pictureUrl: profile?.pictureUrl ?? null,
       statusMessage: profile?.statusMessage ?? null,
+      lineAccountId,
     });
 
     console.log(
@@ -290,13 +312,18 @@ async function handleEvent(
     }
 
     // friend_add シナリオに登録（このアカウントのシナリオのみ）
+    // friend.line_account_id was just written by upsertFriend(lineAccountId)
+    // above, so it reflects the channel that received this webhook. Using the
+    // friend column (rather than the handler-level lineAccountId arg) keeps the
+    // guard in lock-step with the new account-scoped enforcement in
+    // enrollFriendInScenario.
     const scenarios = await getScenarios(db);
     for (const scenario of scenarios) {
       // Only trigger scenarios belonging to this account (or unassigned for backward compat)
-      const scenarioAccountMatch =
-        !scenario.line_account_id ||
-        !lineAccountId ||
-        scenario.line_account_id === lineAccountId;
+      const scenarioAccountMatch = scenarioMatchesAccount(
+        scenario.line_account_id,
+        friend.line_account_id,
+      );
       if (
         scenario.trigger_type === "friend_add" &&
         scenario.is_active &&
@@ -605,6 +632,120 @@ async function handleEvent(
         console.error("[ignition handler] error:", err);
       }
       return;
+    }
+    // ─────────────────────────────────────────────────
+
+    // ─── SUMMIT_20260517 機能 1: タグ自動付与 — サミット参加者キーワード ───
+    // 既存「発火」ハンドラと完全に同じ構造:
+    //   - キーワード完全一致 ("サミット")
+    //   - addTagToFriend(固定 UUID, migration 041 で seed)
+    //   - reply + messages_log 記録
+    //   - 失敗しても follow / 他処理は止めない
+    if (trimmedIncoming === SUMMIT_KEYWORD) {
+      try {
+        await addTagToFriend(db, friend.id, SUMMIT_TAG_ID);
+        if (replyToken) {
+          await lineClient.replyMessage(replyToken, [
+            { type: "text", text: SUMMIT_WELCOME_REPLY },
+          ]);
+          const replyLogId = crypto.randomUUID();
+          await db
+            .prepare(
+              `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, created_at)
+               VALUES (?, ?, 'outgoing', 'text', ?, NULL, NULL, ?)`,
+            )
+            .bind(replyLogId, friend.id, SUMMIT_WELCOME_REPLY, jstNow())
+            .run();
+        }
+        console.log(
+          `[summit] tagged friend ${friend.id} with SUMMIT_20260517 via keyword`,
+        );
+      } catch (err) {
+        console.error("[summit handler] error:", err);
+      }
+      return;
+    }
+    // ─────────────────────────────────────────────────
+
+    // ─── SUMMIT_20260517 機能 2: 自由文 → Hermes 受信確認 + Supabase 保存 ───
+    // SUMMIT_20260517 タグ持ちの友達からの自由文を Hermes (子竜の分身 AI)
+    // 用 inbox に保存し、即時で受信確認返信を返す。
+    // タグ未保有なら全スキップ (既存 mizukagami / scenario / auto_reply 処理に流す)。
+    // 保存先: Supabase phoenix-memory-os (project_id: eizsilomeafyhftuvqst)
+    //   table:  summit_demo_inbox (migration: supabase/migrations/20260517_summit_demo_inbox.sql)
+    //   env:    SUMMIT_SUPABASE_URL / SUMMIT_SUPABASE_SERVICE_KEY
+    // supabase-js は CF Worker でやや重いため REST API 直接 POST (既存 !fix と同じ手法)。
+    try {
+      const hasSummitTag = await db
+        .prepare(
+          `SELECT 1 AS hit FROM friend_tags WHERE friend_id = ? AND tag_id = ? LIMIT 1`,
+        )
+        .bind(friend.id, SUMMIT_TAG_ID)
+        .first<{ hit: number }>();
+      if (hasSummitTag) {
+        // 1. 即時自動返信 (LINE reply API)
+        if (replyToken) {
+          try {
+            await lineClient.replyMessage(replyToken, [
+              { type: "text", text: SUMMIT_ACK_REPLY },
+            ]);
+            const ackLogId = crypto.randomUUID();
+            await db
+              .prepare(
+                `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, created_at)
+                 VALUES (?, ?, 'outgoing', 'text', ?, NULL, NULL, ?)`,
+              )
+              .bind(ackLogId, friend.id, SUMMIT_ACK_REPLY, jstNow())
+              .run();
+          } catch (replyErr) {
+            console.error("[summit-inbox] ack reply failed:", replyErr);
+          }
+        }
+        // 2. Supabase summit_demo_inbox に保存 (phoenix-memory-os = eizsilomeafyhftuvqst)
+        //    SUMMIT_SUPABASE_URL/KEY (推奨) → 無ければ SUPABASE_URL/KEY に fallback。
+        //    無設定なら best-effort スキップ (受信確認返信は既に出している)。
+        if (summitSupabaseUrl && summitSupabaseServiceKey) {
+          try {
+            const resp = await fetch(
+              `${summitSupabaseUrl}/rest/v1/summit_demo_inbox`,
+              {
+                method: "POST",
+                headers: {
+                  apikey: summitSupabaseServiceKey,
+                  Authorization: `Bearer ${summitSupabaseServiceKey}`,
+                  "Content-Type": "application/json",
+                  Prefer: "return=minimal",
+                },
+                body: JSON.stringify({
+                  line_user_id: userId,
+                  friend_id: friend.id,
+                  text: incomingText,
+                  summit_id: SUMMIT_ID,
+                }),
+              },
+            );
+            if (!resp.ok) {
+              console.error(
+                `[summit-inbox] Supabase POST failed: ${resp.status} ${await resp.text()}`,
+              );
+            } else {
+              console.log(
+                `[summit-inbox] stored free text from friend ${friend.id} (${incomingText.length} chars)`,
+              );
+            }
+          } catch (sbErr) {
+            console.error("[summit-inbox] Supabase POST exception:", sbErr);
+          }
+        } else {
+          console.warn(
+            "[summit-inbox] SUMMIT_SUPABASE_URL / KEY missing — skipping persistence",
+          );
+        }
+        return;
+      }
+    } catch (summitErr) {
+      // SUMMIT tag 判定エラーは既存処理に影響させない (機能フラグ的に fall-through)
+      console.error("[summit-inbox] tag check error:", summitErr);
     }
     // ─────────────────────────────────────────────────
 
