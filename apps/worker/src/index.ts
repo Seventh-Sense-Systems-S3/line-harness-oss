@@ -111,6 +111,11 @@ export type Env = {
     // サミット後は撤去する。
     SUMMIT_SUPABASE_URL?: string;
     SUMMIT_SUPABASE_SERVICE_KEY?: string;
+    // ─── Anthropic API (子竜 Clone LLM for SUMMIT live demo) ───
+    // 機能 2 改修: SUMMIT タグ持ち友達の自由文に対して Claude Haiku 4.5 が
+    // 個別返答を生成する (LiteLLM 経由ではなくコスト削減のため直接接続)。
+    // サミット後は撤去する。
+    ANTHROPIC_API_KEY?: string;
     // ─── PostHog (analytics) ───
     POSTHOG_API_KEY?: string;
     POSTHOG_HOST?: string;

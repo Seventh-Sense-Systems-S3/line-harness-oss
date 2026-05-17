@@ -23,6 +23,7 @@ import {
 } from "@line-crm/db";
 import { fireEvent } from "../services/event-bus.js";
 import { buildMessage, expandVariables } from "../services/step-delivery.js";
+import { SUMMIT_SYSTEM_PROMPT } from "../lib/shiryu-clone-prompt.js";
 import type { Env } from "../index.js";
 
 const webhook = new Hono<Env>();
@@ -37,15 +38,27 @@ const MAX_WEBHOOK_BODY_SIZE = 1024 * 1024; // 1 MiB
 // 既存「発火」(IGNITION_発火, e3470801-...) パターンと完全に同じ運用:
 //   - tag UUID は固定 (migration 041 で seed)
 //   - キーワード「サミット」送信 → SUMMIT_20260517 タグ自動付与 + 歓迎返信 (機能 1)
-//   - SUMMIT タグ持ちの自由文 → 受信確認返信 + Supabase 保存 (機能 2, Hermes 用)
+//   - SUMMIT タグ持ちの自由文 → LLM (Claude Haiku 4.5) 即時個別返答 + Supabase 保存 (機能 2, Hermes 用)
 // サミット (2026-05-17) 終了後はこの定数とハンドラを撤去する。
 const SUMMIT_TAG_ID = "b2d4a3f0-5e17-4cae-9a01-20260517a001";
 const SUMMIT_KEYWORD = "サミット";
 const SUMMIT_ID = "SUMMIT_20260517";
 const SUMMIT_WELCOME_REPLY =
   "サミットへようこそ。子竜さんの分身 AI 試作版とお話できます。なにか叶えたいことを1つ書いて送ってみてください。";
-const SUMMIT_ACK_REPLY =
-  "届きました！子竜さんがヘルメスに指示を出します。少しお待ちください…";
+// 既存ハンドラに流す予約キーワード:
+//   - 「水鏡」: mizukagami service binding に proxy する(下流のロジック)
+//   - 「発火」: SUMMIT 機能 2 より前に独自ハンドラで処理 (return 済み)
+//   - 「サミット」: SUMMIT 機能 1 (タグ自動付与) より前で完全一致 return 済み
+// SUMMIT 機能 2 の LLM 返答ハンドラが「水鏡」を誤ってインターセプトしないように
+// 機能 2 の入口で完全一致を弾く (大文字小文字・前後空白は trim 済み文字列で比較)。
+const SUMMIT_RESERVED_KEYWORDS = new Set<string>(["水鏡", "発火", "サミット"]);
+// SUMMIT 機能 2 改修: LLM (Claude Haiku 4.5) が個別返答を生成して LINE push API で
+// 配信する。「届きました」テンプレ ACK は廃止。LLM 呼び出しは ctx.waitUntil() で
+// 非同期に走らせ、webhook は即 200 を返す (LINE の 1s タイムアウト回避)。
+const SUMMIT_LLM_MODEL = "claude-haiku-4-5-20251001";
+const SUMMIT_LLM_MAX_TOKENS = 600;
+const SUMMIT_LLM_USER_INSTRUCTION =
+  "この自由文に対して、タグ分類 → 受け止め → リフレーム → 水鏡誘導 の返答を書いてください。返答だけ。前置きや説明は不要。";
 
 webhook.post("/webhook", async (c) => {
   // Pre-read size guard: reject before reading the body if Content-Length is oversized.
@@ -125,6 +138,9 @@ webhook.post("/webhook", async (c) => {
     : null;
 
   // 非同期処理 — LINE は ~1s 以内のレスポンスを要求
+  // SUMMIT 機能 2 の LLM 呼び出しを ctx.waitUntil() で非同期に走らせるため
+  // executionCtx を handleEvent に渡す。
+  const ctx = c.executionCtx;
   const processingPromise = (async () => {
     for (const event of body.events) {
       // ─────────────────────────────────────────────────────────
@@ -189,6 +205,10 @@ webhook.post("/webhook", async (c) => {
           // SUMMIT 2026-05-17 live demo: phoenix-memory-os Supabase (fallback to SUPABASE_URL)
           c.env.SUMMIT_SUPABASE_URL ?? c.env.SUPABASE_URL,
           c.env.SUMMIT_SUPABASE_SERVICE_KEY ?? c.env.SUPABASE_SERVICE_ROLE_KEY,
+          // SUMMIT 機能 2 改修: Anthropic API key (Claude Haiku 4.5 直接接続)
+          c.env.ANTHROPIC_API_KEY,
+          // ctx.waitUntil() で LLM 呼び出しを非同期化するための ExecutionContext
+          ctx,
         );
       } catch (err) {
         console.error("Error handling webhook event:", err);
@@ -224,6 +244,9 @@ async function handleEvent(
   // SUMMIT 2026-05-17 live demo: phoenix-memory-os Supabase
   summitSupabaseUrl?: string,
   summitSupabaseServiceKey?: string,
+  // SUMMIT 機能 2 改修: LLM (Claude Haiku 4.5) 個別返答用
+  anthropicApiKey?: string,
+  ctx?: ExecutionContext,
 ): Promise<void> {
   if (event.type === "follow") {
     const userId =
@@ -667,85 +690,211 @@ async function handleEvent(
     }
     // ─────────────────────────────────────────────────
 
-    // ─── SUMMIT_20260517 機能 2: 自由文 → Hermes 受信確認 + Supabase 保存 ───
-    // SUMMIT_20260517 タグ持ちの友達からの自由文を Hermes (子竜の分身 AI)
-    // 用 inbox に保存し、即時で受信確認返信を返す。
-    // タグ未保有なら全スキップ (既存 mizukagami / scenario / auto_reply 処理に流す)。
+    // ─── SUMMIT_20260517 機能 2: 自由文 → LLM 即時個別返答 + Supabase 保存 ───
+    // SUMMIT_20260517 タグ持ちの友達からの自由文に対して、子竜の分身 AI (Claude
+    // Haiku 4.5) が個別返答を生成して LINE push API で配信する。
+    //
+    // 改修ポイント (旧: 「届きました…」テンプレ ACK + Supabase 保存):
+    //   - 「届きました…」テンプレ廃止 → LLM (Anthropic 直接接続) 個別返答に置換
+    //   - reply API ではなく push API を使う (LLM 応答中に replyToken の 1 分有効期限が
+    //     切れるリスクを回避)
+    //   - ctx.waitUntil() で LLM 呼び出しを非同期化 (LINE webhook の ~1s タイムアウト回避)
+    //   - prompt caching (cache_control: ephemeral) で SOUL prompt キャッシュ → コスト 90% 減
+    //   - summit_demo_inbox に hermes_reply / hermes_replied_at も書き戻す (運用追跡用)
+    //
+    // 予約キーワード (SUMMIT_RESERVED_KEYWORDS) はこの分岐に入らず既存ハンドラに流す
+    // ことで「水鏡」を誤ってインターセプトしない (5/17 子竜本人の実機で発覚した bug 修正)。
+    //
     // 保存先: Supabase phoenix-memory-os (project_id: eizsilomeafyhftuvqst)
     //   table:  summit_demo_inbox (migration: supabase/migrations/20260517_summit_demo_inbox.sql)
     //   env:    SUMMIT_SUPABASE_URL / SUMMIT_SUPABASE_SERVICE_KEY
-    // supabase-js は CF Worker でやや重いため REST API 直接 POST (既存 !fix と同じ手法)。
+    // タグ判定失敗時は既存処理に流す (機能フラグ的 fall-through)。
     try {
-      const hasSummitTag = await db
-        .prepare(
-          `SELECT 1 AS hit FROM friend_tags WHERE friend_id = ? AND tag_id = ? LIMIT 1`,
-        )
-        .bind(friend.id, SUMMIT_TAG_ID)
-        .first<{ hit: number }>();
+      const hasSummitTag =
+        !SUMMIT_RESERVED_KEYWORDS.has(trimmedIncoming) &&
+        (await db
+          .prepare(
+            `SELECT 1 AS hit FROM friend_tags WHERE friend_id = ? AND tag_id = ? LIMIT 1`,
+          )
+          .bind(friend.id, SUMMIT_TAG_ID)
+          .first<{ hit: number }>());
       if (hasSummitTag) {
-        // 1. 即時自動返信 (LINE reply API)
-        if (replyToken) {
+        // LLM 呼び出し + LINE push + Supabase 保存を非同期化。
+        // ctx.waitUntil() があれば worker 全体のライフサイクルに紐付け、無ければ
+        // 既に上位の processingPromise が waitUntil() に乗っているため呼ばずに await。
+        const friendId = friend.id;
+        const userIdLocal = userId;
+        const incomingTextLocal = incomingText;
+        const summitWorkflow = (async () => {
+          // 1. Supabase summit_demo_inbox に保存 (id を取り戻すため return=representation)
+          //    SUMMIT_SUPABASE_URL/KEY (推奨) → 無ければ SUPABASE_URL/KEY に fallback。
+          let inboxId: string | null = null;
+          if (summitSupabaseUrl && summitSupabaseServiceKey) {
+            try {
+              const resp = await fetch(
+                `${summitSupabaseUrl}/rest/v1/summit_demo_inbox`,
+                {
+                  method: "POST",
+                  headers: {
+                    apikey: summitSupabaseServiceKey,
+                    Authorization: `Bearer ${summitSupabaseServiceKey}`,
+                    "Content-Type": "application/json",
+                    Prefer: "return=representation",
+                  },
+                  body: JSON.stringify({
+                    line_user_id: userIdLocal,
+                    friend_id: friendId,
+                    text: incomingTextLocal,
+                    summit_id: SUMMIT_ID,
+                  }),
+                },
+              );
+              if (!resp.ok) {
+                console.error(
+                  `[summit-llm] Supabase INSERT failed: ${resp.status} ${await resp.text()}`,
+                );
+              } else {
+                const rows = (await resp.json()) as Array<{ id?: string }>;
+                inboxId = rows?.[0]?.id ?? null;
+                console.log(
+                  `[summit-llm] stored free text from friend ${friendId} (${incomingTextLocal.length} chars, inbox_id=${inboxId})`,
+                );
+              }
+            } catch (sbErr) {
+              console.error("[summit-llm] Supabase INSERT exception:", sbErr);
+            }
+          } else {
+            console.warn(
+              "[summit-llm] SUMMIT_SUPABASE_URL / KEY missing — skipping persistence",
+            );
+          }
+
+          // 2. Anthropic API 直接呼び出し (LiteLLM 経由ではなくコスト削減)
+          //    prompt caching: SOUL prompt を ephemeral cache_control 付きで送信し、
+          //    2 回目以降は ~90% コストオフ。
+          if (!anthropicApiKey) {
+            console.warn(
+              "[summit-llm] ANTHROPIC_API_KEY missing — skipping LLM reply",
+            );
+            return;
+          }
+          let reply = "";
           try {
-            await lineClient.replyMessage(replyToken, [
-              { type: "text", text: SUMMIT_ACK_REPLY },
+            const llmResp = await fetch(
+              "https://api.anthropic.com/v1/messages",
+              {
+                method: "POST",
+                headers: {
+                  "x-api-key": anthropicApiKey,
+                  "anthropic-version": "2023-06-01",
+                  "content-type": "application/json",
+                },
+                body: JSON.stringify({
+                  model: SUMMIT_LLM_MODEL,
+                  max_tokens: SUMMIT_LLM_MAX_TOKENS,
+                  system: [
+                    {
+                      type: "text",
+                      text: SUMMIT_SYSTEM_PROMPT,
+                      cache_control: { type: "ephemeral" },
+                    },
+                  ],
+                  messages: [
+                    {
+                      role: "user",
+                      content: `観客の自由文: "${incomingTextLocal}"\n\n${SUMMIT_LLM_USER_INSTRUCTION}`,
+                    },
+                  ],
+                }),
+              },
+            );
+            if (!llmResp.ok) {
+              const errText = await llmResp.text().catch(() => "");
+              console.error(
+                `[summit-llm] Anthropic API failed: ${llmResp.status} ${errText}`,
+              );
+              return;
+            }
+            const llmData = (await llmResp.json()) as {
+              content?: Array<{ type: string; text?: string }>;
+            };
+            reply =
+              llmData.content?.find((b) => b.type === "text")?.text?.trim() ??
+              "";
+            if (!reply) {
+              console.error(
+                "[summit-llm] empty reply from Anthropic — skipping push",
+              );
+              return;
+            }
+          } catch (llmErr) {
+            console.error("[summit-llm] Anthropic exception:", llmErr);
+            return;
+          }
+
+          // 3. LINE push API で個別返答送信 (replyToken は使わない — 期限切れリスク回避)
+          try {
+            await lineClient.pushMessage(userIdLocal, [
+              { type: "text", text: reply },
             ]);
-            const ackLogId = crypto.randomUUID();
+            const pushLogId = crypto.randomUUID();
             await db
               .prepare(
                 `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, created_at)
                  VALUES (?, ?, 'outgoing', 'text', ?, NULL, NULL, ?)`,
               )
-              .bind(ackLogId, friend.id, SUMMIT_ACK_REPLY, jstNow())
+              .bind(pushLogId, friendId, reply, jstNow())
               .run();
-          } catch (replyErr) {
-            console.error("[summit-inbox] ack reply failed:", replyErr);
-          }
-        }
-        // 2. Supabase summit_demo_inbox に保存 (phoenix-memory-os = eizsilomeafyhftuvqst)
-        //    SUMMIT_SUPABASE_URL/KEY (推奨) → 無ければ SUPABASE_URL/KEY に fallback。
-        //    無設定なら best-effort スキップ (受信確認返信は既に出している)。
-        if (summitSupabaseUrl && summitSupabaseServiceKey) {
-          try {
-            const resp = await fetch(
-              `${summitSupabaseUrl}/rest/v1/summit_demo_inbox`,
-              {
-                method: "POST",
-                headers: {
-                  apikey: summitSupabaseServiceKey,
-                  Authorization: `Bearer ${summitSupabaseServiceKey}`,
-                  "Content-Type": "application/json",
-                  Prefer: "return=minimal",
-                },
-                body: JSON.stringify({
-                  line_user_id: userId,
-                  friend_id: friend.id,
-                  text: incomingText,
-                  summit_id: SUMMIT_ID,
-                }),
-              },
+            console.log(
+              `[summit-llm] reply sent userId=${userIdLocal} reply=${reply.slice(0, 50)}`,
             );
-            if (!resp.ok) {
-              console.error(
-                `[summit-inbox] Supabase POST failed: ${resp.status} ${await resp.text()}`,
-              );
-            } else {
-              console.log(
-                `[summit-inbox] stored free text from friend ${friend.id} (${incomingText.length} chars)`,
-              );
-            }
-          } catch (sbErr) {
-            console.error("[summit-inbox] Supabase POST exception:", sbErr);
+          } catch (pushErr) {
+            console.error("[summit-llm] LINE push failed:", pushErr);
+            return;
           }
+
+          // 4. summit_demo_inbox に hermes_reply / hermes_replied_at を書き戻す
+          //    (inboxId が取れた場合のみ。失敗しても返信自体は届いている)
+          if (inboxId && summitSupabaseUrl && summitSupabaseServiceKey) {
+            try {
+              const patchResp = await fetch(
+                `${summitSupabaseUrl}/rest/v1/summit_demo_inbox?id=eq.${encodeURIComponent(inboxId)}`,
+                {
+                  method: "PATCH",
+                  headers: {
+                    apikey: summitSupabaseServiceKey,
+                    Authorization: `Bearer ${summitSupabaseServiceKey}`,
+                    "Content-Type": "application/json",
+                    Prefer: "return=minimal",
+                  },
+                  body: JSON.stringify({
+                    hermes_reply: reply,
+                    hermes_replied_at: new Date().toISOString(),
+                  }),
+                },
+              );
+              if (!patchResp.ok) {
+                console.error(
+                  `[summit-llm] Supabase PATCH failed: ${patchResp.status} ${await patchResp.text()}`,
+                );
+              }
+            } catch (patchErr) {
+              console.error("[summit-llm] Supabase PATCH exception:", patchErr);
+            }
+          }
+        })();
+        if (ctx) {
+          ctx.waitUntil(summitWorkflow);
         } else {
-          console.warn(
-            "[summit-inbox] SUMMIT_SUPABASE_URL / KEY missing — skipping persistence",
-          );
+          // ctx 未渡し時のフォールバック (テスト経路等): 同期 await。
+          // 実運用では上位の processingPromise が waitUntil 済みなので問題ない。
+          await summitWorkflow;
         }
         return;
       }
     } catch (summitErr) {
       // SUMMIT tag 判定エラーは既存処理に影響させない (機能フラグ的に fall-through)
-      console.error("[summit-inbox] tag check error:", summitErr);
+      console.error("[summit-llm] tag check error:", summitErr);
     }
     // ─────────────────────────────────────────────────
 
