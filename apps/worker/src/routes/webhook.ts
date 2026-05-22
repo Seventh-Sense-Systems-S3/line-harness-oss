@@ -51,7 +51,19 @@ const SUMMIT_WELCOME_REPLY =
 //   - 「サミット」: SUMMIT 機能 1 (タグ自動付与) より前で完全一致 return 済み
 // SUMMIT 機能 2 の LLM 返答ハンドラが「水鏡」を誤ってインターセプトしないように
 // 機能 2 の入口で完全一致を弾く (大文字小文字・前後空白は trim 済み文字列で比較)。
-const SUMMIT_RESERVED_KEYWORDS = new Set<string>(["水鏡", "発火", "サミット"]);
+// mizukagami-worker (servers/mizukagami/src/services/mizukagami.ts) の
+// MIZUKAGAMI_TRIGGERS と一致させる + 既存「発火」「サミット」も保護。
+// 観客が任意の水鏡起動キーワードを打っても SUMMIT inbox が干渉せず
+// mizukagami 転送ハンドラに流れるようにする (サミット 5/17 別 CC 指摘で発覚)。
+const SUMMIT_RESERVED_KEYWORDS = new Set<string>([
+  "水鏡",
+  "みずかがみ",
+  "mizukagami",
+  "診断を始める",
+  "水鏡を始める",
+  "発火",
+  "サミット",
+]);
 // SUMMIT 機能 2 改修: LLM (Claude Haiku 4.5) が個別返答を生成して LINE push API で
 // 配信する。「届きました」テンプレ ACK は廃止。LLM 呼び出しは ctx.waitUntil() で
 // 非同期に走らせ、webhook は即 200 を返す (LINE の 1s タイムアウト回避)。
@@ -710,14 +722,8 @@ async function handleEvent(
     //   env:    SUMMIT_SUPABASE_URL / SUMMIT_SUPABASE_SERVICE_KEY
     // タグ判定失敗時は既存処理に流す (機能フラグ的 fall-through)。
     try {
-      const hasSummitTag =
-        !SUMMIT_RESERVED_KEYWORDS.has(trimmedIncoming) &&
-        (await db
-          .prepare(
-            `SELECT 1 AS hit FROM friend_tags WHERE friend_id = ? AND tag_id = ? LIMIT 1`,
-          )
-          .bind(friend.id, SUMMIT_TAG_ID)
-          .first<{ hit: number }>());
+      // SUMMIT LLM: 一時無効化中
+      const hasSummitTag = false;
       if (hasSummitTag) {
         // LLM 呼び出し + LINE push + Supabase 保存を非同期化。
         // ctx.waitUntil() があれば worker 全体のライフサイクルに紐付け、無ければ

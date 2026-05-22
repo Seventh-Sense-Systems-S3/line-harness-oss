@@ -1,9 +1,9 @@
-import { jstNow } from './utils.js';
-import { computeNextDeliveryAt } from './scenario-schedule.js';
-export type ScenarioTriggerType = 'friend_add' | 'tag_added' | 'manual';
-export type MessageType = 'text' | 'image' | 'flex';
-export type FriendScenarioStatus = 'active' | 'paused' | 'completed';
-export type DeliveryMode = 'relative' | 'elapsed' | 'absolute_time';
+import { jstNow } from "./utils.js";
+import { computeNextDeliveryAt } from "./scenario-schedule.js";
+export type ScenarioTriggerType = "friend_add" | "tag_added" | "manual";
+export type MessageType = "text" | "image" | "flex";
+export type FriendScenarioStatus = "active" | "paused" | "completed";
+export type DeliveryMode = "relative" | "elapsed" | "absolute_time";
 
 export interface Scenario {
   id: string;
@@ -57,7 +57,9 @@ export interface FriendScenario {
 
 export type ScenarioWithStepCount = Scenario & { step_count: number };
 
-export async function getScenarios(db: D1Database): Promise<ScenarioWithStepCount[]> {
+export async function getScenarios(
+  db: D1Database,
+): Promise<ScenarioWithStepCount[]> {
   const result = await db
     .prepare(
       `SELECT s.*, COUNT(ss.id) as step_count
@@ -117,7 +119,7 @@ export async function createScenario(
       input.description ?? null,
       input.triggerType,
       input.triggerTagId ?? null,
-      input.deliveryMode ?? 'relative',
+      input.deliveryMode ?? "relative",
       now,
       now,
     )
@@ -130,7 +132,10 @@ export async function createScenario(
 }
 
 export type UpdateScenarioInput = Partial<
-  Pick<Scenario, 'name' | 'description' | 'trigger_type' | 'trigger_tag_id' | 'is_active'>
+  Pick<
+    Scenario,
+    "name" | "description" | "trigger_type" | "trigger_tag_id" | "is_active"
+  >
 >;
 
 export async function updateScenario(
@@ -143,23 +148,23 @@ export async function updateScenario(
   const values: unknown[] = [];
 
   if (updates.name !== undefined) {
-    fields.push('name = ?');
+    fields.push("name = ?");
     values.push(updates.name);
   }
   if (updates.description !== undefined) {
-    fields.push('description = ?');
+    fields.push("description = ?");
     values.push(updates.description);
   }
   if (updates.trigger_type !== undefined) {
-    fields.push('trigger_type = ?');
+    fields.push("trigger_type = ?");
     values.push(updates.trigger_type);
   }
   if (updates.trigger_tag_id !== undefined) {
-    fields.push('trigger_tag_id = ?');
+    fields.push("trigger_tag_id = ?");
     values.push(updates.trigger_tag_id);
   }
   if (updates.is_active !== undefined) {
-    fields.push('is_active = ?');
+    fields.push("is_active = ?");
     values.push(updates.is_active);
   }
 
@@ -170,12 +175,12 @@ export async function updateScenario(
       .first<Scenario>();
   }
 
-  fields.push('updated_at = ?');
+  fields.push("updated_at = ?");
   values.push(now);
   values.push(id);
 
   await db
-    .prepare(`UPDATE scenarios SET ${fields.join(', ')} WHERE id = ?`)
+    .prepare(`UPDATE scenarios SET ${fields.join(", ")} WHERE id = ?`)
     .bind(...values)
     .run();
 
@@ -185,7 +190,10 @@ export async function updateScenario(
     .first<Scenario>();
 }
 
-export async function deleteScenario(db: D1Database, id: string): Promise<void> {
+export async function deleteScenario(
+  db: D1Database,
+  id: string,
+): Promise<void> {
   await db.prepare(`DELETE FROM scenarios WHERE id = ?`).bind(id).run();
 }
 
@@ -254,18 +262,18 @@ export async function createScenarioStep(
 export type UpdateScenarioStepInput = Partial<
   Pick<
     ScenarioStep,
-    | 'step_order'
-    | 'delay_minutes'
-    | 'message_type'
-    | 'message_content'
-    | 'condition_type'
-    | 'condition_value'
-    | 'next_step_on_false'
-    | 'offset_days'
-    | 'offset_minutes'
-    | 'delivery_time'
-    | 'template_id'
-    | 'on_reach_tag_id'
+    | "step_order"
+    | "delay_minutes"
+    | "message_type"
+    | "message_content"
+    | "condition_type"
+    | "condition_value"
+    | "next_step_on_false"
+    | "offset_days"
+    | "offset_minutes"
+    | "delivery_time"
+    | "template_id"
+    | "on_reach_tag_id"
   >
 >;
 
@@ -278,58 +286,58 @@ export async function updateScenarioStep(
   const values: unknown[] = [];
 
   if (updates.step_order !== undefined) {
-    fields.push('step_order = ?');
+    fields.push("step_order = ?");
     values.push(updates.step_order);
   }
   if (updates.delay_minutes !== undefined) {
-    fields.push('delay_minutes = ?');
+    fields.push("delay_minutes = ?");
     values.push(updates.delay_minutes);
   }
   if (updates.message_type !== undefined) {
-    fields.push('message_type = ?');
+    fields.push("message_type = ?");
     values.push(updates.message_type);
   }
   if (updates.message_content !== undefined) {
-    fields.push('message_content = ?');
+    fields.push("message_content = ?");
     values.push(updates.message_content);
   }
   if (updates.condition_type !== undefined) {
-    fields.push('condition_type = ?');
+    fields.push("condition_type = ?");
     values.push(updates.condition_type);
   }
   if (updates.condition_value !== undefined) {
-    fields.push('condition_value = ?');
+    fields.push("condition_value = ?");
     values.push(updates.condition_value);
   }
   if (updates.next_step_on_false !== undefined) {
-    fields.push('next_step_on_false = ?');
+    fields.push("next_step_on_false = ?");
     values.push(updates.next_step_on_false);
   }
   if (updates.offset_days !== undefined) {
-    fields.push('offset_days = ?');
+    fields.push("offset_days = ?");
     values.push(updates.offset_days);
   }
   if (updates.offset_minutes !== undefined) {
-    fields.push('offset_minutes = ?');
+    fields.push("offset_minutes = ?");
     values.push(updates.offset_minutes);
   }
   if (updates.delivery_time !== undefined) {
-    fields.push('delivery_time = ?');
+    fields.push("delivery_time = ?");
     values.push(updates.delivery_time);
   }
   if (updates.template_id !== undefined) {
-    fields.push('template_id = ?');
+    fields.push("template_id = ?");
     values.push(updates.template_id);
   }
   if (updates.on_reach_tag_id !== undefined) {
-    fields.push('on_reach_tag_id = ?');
+    fields.push("on_reach_tag_id = ?");
     values.push(updates.on_reach_tag_id);
   }
 
   if (fields.length > 0) {
     values.push(id);
     await db
-      .prepare(`UPDATE scenario_steps SET ${fields.join(', ')} WHERE id = ?`)
+      .prepare(`UPDATE scenario_steps SET ${fields.join(", ")} WHERE id = ?`)
       .bind(...values)
       .run();
   }
@@ -340,7 +348,10 @@ export async function updateScenarioStep(
     .first<ScenarioStep>();
 }
 
-export async function deleteScenarioStep(db: D1Database, id: string): Promise<void> {
+export async function deleteScenarioStep(
+  db: D1Database,
+  id: string,
+): Promise<void> {
   await db.prepare(`DELETE FROM scenario_steps WHERE id = ?`).bind(id).run();
 }
 
@@ -412,9 +423,13 @@ export async function enrollFriendInScenario(
   const nextDeliveryDate = computeNextDeliveryAt(
     { delivery_mode: scenarioRow.delivery_mode },
     firstStep,
-    { enrolledAt: enrolledAtDate, previousDeliveredAt: enrolledAtDate, now: enrolledAtDate },
+    {
+      enrolledAt: enrolledAtDate,
+      previousDeliveredAt: enrolledAtDate,
+      now: enrolledAtDate,
+    },
   );
-  const nextDeliveryAt = nextDeliveryDate.toISOString().slice(0, -1) + '+09:00';
+  const nextDeliveryAt = nextDeliveryDate.toISOString().slice(0, -1) + "+09:00";
 
   // current_step_order is initialized to -1 (NOT 0) so that the step-delivery
   // service's `steps.find(s => s.step_order > fs.current_step_order)` lookup
@@ -457,7 +472,11 @@ export async function getFriendScenariosDueForDelivery(
   const nowMs = new Date(now).getTime();
   return result.results
     .filter((fs) => new Date(fs.next_delivery_at!).getTime() <= nowMs)
-    .sort((a, b) => new Date(a.next_delivery_at!).getTime() - new Date(b.next_delivery_at!).getTime());
+    .sort(
+      (a, b) =>
+        new Date(a.next_delivery_at!).getTime() -
+        new Date(b.next_delivery_at!).getTime(),
+    );
 }
 
 /**
@@ -487,7 +506,7 @@ export async function claimFriendScenarioForDelivery(
  */
 export async function recoverStuckDeliveries(db: D1Database): Promise<number> {
   const fiveMinAgo = new Date(Date.now() + 9 * 60 * 60_000 - 5 * 60_000);
-  const threshold = fiveMinAgo.toISOString().slice(0, -1) + '+09:00';
+  const threshold = fiveMinAgo.toISOString().slice(0, -1) + "+09:00";
   const result = await db
     .prepare(
       `UPDATE friend_scenarios SET status = 'active', updated_at = ?
@@ -533,4 +552,13 @@ export async function completeFriendScenario(
     )
     .bind(now, id)
     .run();
+}
+
+export function scenarioMatchesAccount(
+  scenarioAccountId: string | null | undefined,
+  friendAccountId: string | null | undefined,
+): boolean {
+  if (!scenarioAccountId) return true;
+  if (!friendAccountId) return true;
+  return scenarioAccountId === friendAccountId;
 }

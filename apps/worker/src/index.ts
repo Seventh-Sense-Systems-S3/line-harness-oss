@@ -581,11 +581,15 @@ async function scheduled(
   // 配信系は1回だけ実行（内部でfriendのline_account_idから正しいlineClientを動的解決）
   // 以前はアカウントごとにループしていたが、アカウントフィルタなしのDBクエリで
   // 全アカウントの配信が各ループで重複実行されていたバグを修正
+  const { processScheduledPushes } =
+    await import("./services/scheduled-pushes.js");
+
   const jobs = [];
   jobs.push(
     processStepDeliveries(env.DB, defaultLineClient, env.WORKER_URL),
     processScheduledBroadcasts(env.DB, defaultLineClient, env.WORKER_URL),
     processReminderDeliveries(env.DB, defaultLineClient),
+    processScheduledPushes(env.DB, env.LINE_CHANNEL_ACCESS_TOKEN),
   );
   // キュー処理は1回だけ実行（内部でアカウント別lineClientを解決する）
   // ロック解除: タイムアウトでstuckした配信を復旧
